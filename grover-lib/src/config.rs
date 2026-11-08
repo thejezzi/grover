@@ -203,6 +203,10 @@ impl Config {
             if copy.from.as_os_str().is_empty() {
                 return Err(Error::ConfigInvalid("`copy`: `from` is empty".into()));
             }
+            // `rm` deletes copy targets too; an absolute one would leave the ticket folder.
+            if copy.to.as_ref().is_some_and(|to| to.is_absolute()) {
+                return Err(Error::ConfigInvalid("`copy`: `to` must be relative".into()));
+            }
         }
         Ok(())
     }
@@ -363,6 +367,18 @@ mod tests {
         assert!(meta.file_type().is_symlink(), "the link is kept");
         let written = fs::read_to_string(&real).expect("read");
         assert!(written.contains("base: main"), "{written}");
+    }
+
+    #[test]
+    fn absolute_copy_to_is_an_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write(
+            tmp.path(),
+            "work_dir: tickets\nrepo_dirs: [code]\n\
+             copy:\n  - from: tpl/AGENTS.md\n    to: /tmp/AGENTS.md\n",
+        );
+        let err = Config::load(Some(&path)).expect_err("absolute to");
+        assert!(err.to_string().contains("`copy`"), "{err}");
     }
 
     #[test]

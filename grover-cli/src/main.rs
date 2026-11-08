@@ -221,5 +221,6 @@ fn init_logging(verbose: u8, quiet: bool) {
         .with_writer(io::stderr)
         .without_time()
         .with_target(false)
+        .with_ansi(false)
         .init();
 }
