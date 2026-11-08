@@ -1,0 +1,25 @@
+[package]
+name = "grover-lib"
+description = "Core workflow for ticket worktrees across many repositories"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "grover_lib"
+path = "src/lib.rs"
+
+[dependencies]
+dirs.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+strsim.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

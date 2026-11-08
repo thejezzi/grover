@@ -1,0 +1,29 @@
+# Example config for `grover`. Copy it to ~/.config/grover/config.yaml or pass it with
+# `grover --config <path>`. Relative paths are relative to this file, `~` is the home
+# directory.
+
+# Required: ticket directories are created here.
+work_dir: "~/work/tickets"
+
+# Branch name; `{ticket}` is required and replaced by the ticket slug.
+branch_template: "ticket/{ticket}"
+
+# Base refs for new branches, tried left to right per repo.
+base: "main|master|HEAD"     # first ref that exists in the repo wins
+
+# Directories whose child repos are discovered as local repos.
+repo_dirs:
+  - "~/code"
+
+# Destination for clones from `repos`; defaults to ~/.grover/repos.
+clone_dir: "~/.grover/repos"
+
+# Repos cloned only when selected. A local repo from `repo_dirs` wins on the same name.
+repos:
+  - url: "git@github.com:org/api.git"
+    name: api                    # optional, otherwise derived from the URL
+
+# Files copied into the ticket directory; `to` is relative to that directory.
+copy:
+  - from: "~/templates/AGENTS.md"
+    to: AGENTS.md                # optional, otherwise the file name

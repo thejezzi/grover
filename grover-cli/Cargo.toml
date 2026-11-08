@@ -1,0 +1,27 @@
+[package]
+name = "grover-cli"
+description = "Ticket worktrees across many repositories"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "grover"
+path = "src/main.rs"
+
+[dependencies]
+grover-lib.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+inquire.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
