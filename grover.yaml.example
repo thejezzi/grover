@@ -1,6 +1,9 @@
-# Example config for `grover`. Copy it to ~/.config/grover/config.yaml or pass it with
-# `grover --config <path>`. Relative paths are relative to this file, `~` is the home
-# directory.
+# Format reference for `grover`; nothing copies it. `grover config --init` asks for the
+# values and writes only the ones you enter, `grover config` edits them on a terminal.
+# The editor writes resolved, absolute paths and fills in `clone_dir`, so a committed or
+# shared config is edited by hand. The file is read from ./grover.yaml, else
+# $XDG_CONFIG_HOME/grover/config.yaml, or from `grover --config <path>`. Relative paths
+# are relative to this file, `~` is the home directory.
 
 # Required: ticket directories are created here.
 work_dir: "~/work/tickets"

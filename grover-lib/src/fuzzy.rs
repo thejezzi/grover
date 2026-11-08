@@ -1,4 +1,4 @@
-//! Repo selection by fuzzy match.
+//! Name selection by fuzzy match, for repos and tickets.
 //!
 //! Tiers from strict to loose: exact, prefix, substring, one typo (including
 //! transposition), then Jaro-Winkler. As soon as one tier has several hits the
@@ -28,29 +28,38 @@ pub fn select(names: &[&str], query: &str) -> Result<usize> {
         }
     }
 
-    let mut scored: Vec<(usize, f64)> = lower
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (index, strsim::jaro_winkler(name, &needle)))
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-
-    let best = scored.first().map_or(0.0, |&(_, score)| score);
+    let ranked = scored(names, query);
+    let best = ranked.first().map_or(0.0, |&(_, score)| score);
     if best < SIMILAR {
-        let suggestions: Vec<&str> =
-            scored.iter().take(3).map(|&(index, _)| names[index]).collect();
-        return Err(Error::UnknownRepo {
-            query: query.to_string(),
-            suggestions: join(&suggestions),
-        });
+        let suggestions = similar(names, query);
+        return Err(Error::UnknownName { query: query.to_string(), suggestions });
     }
 
     let hits: Vec<usize> =
-        scored.iter().filter(|&&(_, score)| score == best).map(|&(index, _)| index).collect();
+        ranked.iter().filter(|&&(_, score)| score == best).map(|&(index, _)| index).collect();
     match hits.len() {
         1 => Ok(hits[0]),
         _ => Err(ambiguous(query, names, &hits)),
     }
+}
+
+/// The three closest names, for the error of a query that matches nothing.
+pub fn similar(names: &[&str], query: &str) -> String {
+    let ranked = scored(names, query);
+    let closest: Vec<&str> = ranked.iter().take(3).map(|&(index, _)| names[index]).collect();
+    join(&closest)
+}
+
+/// Every name scored against the query, best match first.
+fn scored(names: &[&str], query: &str) -> Vec<(usize, f64)> {
+    let needle = query.to_lowercase();
+    let mut ranked: Vec<(usize, f64)> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (index, strsim::jaro_winkler(&name.to_lowercase(), &needle)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked
 }
 
 /// Indices of the names `pred` accepts.
@@ -60,7 +69,7 @@ fn candidates(lower: &[String], pred: impl Fn(&str) -> bool) -> Vec<usize> {
 
 fn ambiguous(query: &str, names: &[&str], hits: &[usize]) -> Error {
     let candidates: Vec<&str> = hits.iter().map(|&index| names[index]).collect();
-    Error::AmbiguousRepo { query: query.to_string(), candidates: join(&candidates) }
+    Error::AmbiguousName { query: query.to_string(), candidates: join(&candidates) }
 }
 
 fn join(names: &[&str]) -> String {
@@ -99,7 +108,7 @@ mod tests {
     fn unknown_names_three_similar_ones() {
         let err = select(REPOS, "database").expect_err("unknown");
         let text = err.to_string();
-        assert!(text.contains("unknown repo"), "{text}");
+        assert!(text.contains("unknown name"), "{text}");
         assert!(text.contains("similar:"), "{text}");
     }
 

@@ -4,7 +4,6 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use grover_lib::config::Config;
 use tempfile::TempDir;
 
 fn run(dir: &Path, args: &[&str]) -> Output {
@@ -55,39 +54,47 @@ fn fixture() -> (TempDir, String) {
 }
 
 #[test]
-fn init_writes_the_example_config_once() {
+fn config_init_without_a_terminal_writes_nothing() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("conf/config.yaml");
-    let config = path.to_str().expect("utf8");
 
-    let first = run(root.path(), &["init", "-c", config]);
-    assert_eq!(first.status.code(), Some(0), "{}", err(&first));
-    assert_eq!(out(&first), "", "stdout stays empty");
-    Config::load(Some(&path)).expect("written config loads");
-
-    let second = run(root.path(), &["init", "-c", config]);
-    assert_eq!(second.status.code(), Some(1));
-    assert!(err(&second).contains("--force"), "{}", err(&second));
-
-    let forced = run(root.path(), &["init", "-c", config, "--force"]);
-    assert_eq!(forced.status.code(), Some(0), "{}", err(&forced));
+    let refused = run(root.path(), &["config", "--init", "-c", path.to_str().expect("utf8")]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(err(&refused).contains("no terminal"), "{}", err(&refused));
+    assert_eq!(out(&refused), "", "stdout stays empty");
+    assert!(!path.exists(), "nothing written");
 }
 
 #[test]
-fn init_uses_the_grover_xdg_config_dir() {
+fn config_init_needs_force_for_an_existing_file() {
+    let (root, config) = fixture();
+    let before = fs::read_to_string(&config).expect("read");
+
+    let refused = run(root.path(), &["config", "--init", "-c", &config]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(err(&refused).contains("--force"), "{}", err(&refused));
+
+    let forced = run(root.path(), &["config", "--init", "--force", "-c", &config]);
+    assert_eq!(forced.status.code(), Some(1), "no terminal either way");
+    assert!(err(&forced).contains("no terminal"), "{}", err(&forced));
+    assert_eq!(fs::read_to_string(&config).expect("read"), before, "file kept");
+}
+
+#[test]
+fn config_init_defaults_to_the_grover_xdg_path() {
     let root = tempfile::tempdir().expect("tempdir");
     let init = Command::new(env!("CARGO_BIN_EXE_grover"))
-        .arg("init")
+        .args(["config", "--init"])
         .current_dir(root.path())
         .env("XDG_CONFIG_HOME", root.path().join("xdg"))
         .stdin(Stdio::null())
         .output()
         .expect("grover starts");
 
-    assert_eq!(init.status.code(), Some(0), "{}", err(&init));
+    assert_eq!(init.status.code(), Some(1));
     let path = root.path().join("xdg/grover/config.yaml");
-    assert!(path.exists());
-    Config::load(Some(&path)).expect("written config loads");
+    assert!(err(&init).contains("xdg/grover/config.yaml"), "{}", err(&init));
+    assert!(!path.exists(), "nothing written");
 }
 
 #[test]
@@ -152,6 +159,37 @@ fn list_prints_only_existing_ticket_names() {
         "PROJ-1
 PROJ-2"
     );
+}
+
+#[test]
+fn rm_without_a_terminal_never_guesses() {
+    let (root, config) = fixture();
+    let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket = root.path().join("tickets/PROJ-1");
+
+    let no_ticket = run(root.path(), &["rm", "-c", &config]);
+    assert_eq!(no_ticket.status.code(), Some(1));
+    assert!(err(&no_ticket).contains("missing ticket"), "{}", err(&no_ticket));
+
+    let unknown = run(root.path(), &["rm", "PROJ-9", "-c", &config]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(err(&unknown).contains("similar"), "{}", err(&unknown));
+    assert!(ticket.join("api/.git").exists(), "nothing removed");
+}
+
+#[test]
+fn rm_removes_the_ticket_and_prints_nothing() {
+    let (root, config) = fixture();
+    let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket = root.path().join("tickets/PROJ-1");
+
+    let removed = run(root.path(), &["rm", "PROJ-1", "-c", &config]);
+
+    assert_eq!(removed.status.code(), Some(0), "{}", err(&removed));
+    assert_eq!(out(&removed), "", "stdout stays empty");
+    assert!(!ticket.exists());
 }
 
 #[test]

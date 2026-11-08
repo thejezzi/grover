@@ -1,7 +1,7 @@
 //! Thin wrapper around the `git` CLI: no `git2`, same behaviour as the terminal.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::error::{Error, Result};
@@ -11,7 +11,7 @@ pub fn is_repo(path: &Path) -> bool {
     path.join(".git").exists()
 }
 
-pub fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
+fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(repo)
@@ -53,6 +53,48 @@ pub fn clone(url: &str, dest: &Path) -> Result<()> {
     run(cmd, format!("clone {url} to {}", dest.display()))
 }
 
+/// Branch checked out in this worktree; `None` when HEAD is detached.
+pub fn head_branch(worktree: &Path) -> Result<Option<String>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(worktree).args(["rev-parse", "--abbrev-ref", "HEAD"]);
+    let branch = stdout(cmd, format!("branch of {}", worktree.display()))?;
+    Ok((branch != "HEAD").then_some(branch))
+}
+
+/// Common git dir of a worktree, so `rm` needs no repo from the config.
+pub fn common_dir(worktree: &Path) -> Result<PathBuf> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(worktree).args(["rev-parse", "--git-common-dir"]);
+    let dir = stdout(cmd, format!("common dir of {}", worktree.display()))?;
+    // git reports it relative to the worktree.
+    Ok(worktree.join(dir))
+}
+
+/// Remove a worktree; `force` drops uncommitted changes.
+pub fn worktree_remove(repo: &Path, worktree: &Path, force: bool) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(["worktree", "remove"]);
+    if force {
+        cmd.arg("--force");
+    }
+    cmd.arg(worktree);
+    run(cmd, format!("worktree remove {}", worktree.display()))
+}
+
+/// Drop worktree entries whose directory is gone.
+pub fn worktree_prune(repo: &Path) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(["worktree", "prune"]);
+    run(cmd, format!("worktree prune in {}", repo.display()))
+}
+
+/// Delete a branch in `repo`; `-d` keeps unmerged branches, `force` uses `-D`.
+pub fn branch_delete(repo: &Path, branch: &str, force: bool) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(repo).args(["branch"]).arg(if force { "-D" } else { "-d" }).arg(branch);
+    run(cmd, format!("branch delete {branch} in {}", repo.display()))
+}
+
 /// Without prompt: missing credentials should fail, not hang.
 fn output(mut cmd: Command) -> Result<Output> {
     cmd.env("GIT_TERMINAL_PROMPT", "0").output().map_err(Error::Spawn)
@@ -63,9 +105,14 @@ fn succeeded(cmd: Command) -> Result<bool> {
 }
 
 fn run(cmd: Command, command: String) -> Result<()> {
+    stdout(cmd, command).map(|_| ())
+}
+
+/// Like `run`, but hands back stdout.
+fn stdout(cmd: Command, command: String) -> Result<String> {
     let out = output(cmd)?;
     if out.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     Err(Error::Git { command, stderr })

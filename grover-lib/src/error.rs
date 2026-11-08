@@ -27,10 +27,10 @@ pub enum Error {
     NoSelection,
     #[error("no repos found: check `repo_dirs` and `repos`")]
     NoRepos,
-    #[error("unknown repo \"{query}\"; similar: {suggestions}")]
-    UnknownRepo { query: String, suggestions: String },
-    #[error("ambiguous repo \"{query}\", candidates: {candidates}")]
-    AmbiguousRepo { query: String, candidates: String },
+    #[error("unknown name \"{query}\"; similar: {suggestions}")]
+    UnknownName { query: String, suggestions: String },
+    #[error("ambiguous name \"{query}\", candidates: {candidates}")]
+    AmbiguousName { query: String, candidates: String },
     #[error("ticket \"{0}\" yields no directory name")]
     InvalidTicket(String),
     #[error("repo {}: none of the base refs \"{bases}\" exists", .repo.display())]

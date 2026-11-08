@@ -2,7 +2,6 @@
 
 mod tui;
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,11 +10,8 @@ use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use grover_lib::config::Config;
-use grover_lib::plan::{Plan, Request, existing_tickets};
+use grover_lib::plan::{self, Plan, Request, existing_tickets};
 use tracing_subscriber::EnvFilter;
-
-/// Written by `grover init`.
-const EXAMPLE: &str = include_str!("../../grover.yaml.example");
 
 #[derive(Parser)]
 #[command(name = "grover", version, about = "Ticket worktrees across many repositories")]
@@ -51,11 +47,16 @@ enum Command {
     },
     /// List work items (ticket directories)
     List,
-    /// Write the example config; never overwrites without --force
-    Init {
-        /// Overwrite an existing file
+    /// Remove a ticket: worktrees, branches, copies, then the directory itself
+    Rm {
+        /// Ticket, e.g. PROJ-123; picked on a terminal when omitted
+        ticket: Option<String>,
+        /// Remove dirty worktrees and unmerged branches too
         #[arg(short, long)]
         force: bool,
+        /// Show only, remove nothing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
     /// Edit the config interactively on a terminal
     Config {
@@ -65,6 +66,12 @@ enum Command {
         /// Print the resolved config
         #[arg(short = 's', long)]
         show: bool,
+        /// Ask for the values and write a config; an existing config is the target
+        #[arg(short, long, conflicts_with_all = ["path", "show"])]
+        init: bool,
+        /// Overwrite an existing config
+        #[arg(long, requires = "init")]
+        force: bool,
     },
     /// Print a completion script
     Completions { shell: Shell },
@@ -106,8 +113,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{ticket}");
             }
         }
-        Command::Init { force } => init(config_path, force)?,
-        Command::Config { path, show } => config_cmd(config_path, path, show)?,
+        Command::Rm { ticket, force, dry_run } => {
+            let config = Config::load(config_path)?;
+            let ticket = rm_ticket(&config, ticket)?;
+            let ticket_dir = plan::resolve_ticket(&config, &ticket)?;
+            plan::remove(&config, &ticket_dir, force, dry_run)?;
+            if dry_run {
+                tracing::info!("dry-run: nothing removed");
+            }
+        }
+        Command::Config { path, show, init, force } => {
+            config_cmd(config_path, path, show, init, force)?
+        }
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "grover", &mut io::stdout());
         }
@@ -129,22 +146,41 @@ fn new_inputs(
     Ok((ticket, repos))
 }
 
-/// `init`: write the example config, creating missing directories.
-fn init(config_path: Option<&Path>, force: bool) -> anyhow::Result<()> {
-    let path = Config::target(config_path)?;
-    if path.exists() && !force {
-        anyhow::bail!("{} exists, use `--force` to overwrite", path.display());
+/// Ticket for `rm`: the argument, else a pick on a terminal; never guessed from the cwd.
+fn rm_ticket(config: &Config, ticket: Option<String>) -> anyhow::Result<String> {
+    if let Some(ticket) = ticket {
+        return Ok(ticket);
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    if !tui::available() {
+        anyhow::bail!("missing ticket: pass <ticket>");
     }
-    fs::write(&path, EXAMPLE)?;
-    tracing::info!("wrote {}; edit it with `grover config`", path.display());
-    Ok(())
+    let tickets = existing_tickets(config)?;
+    if tickets.is_empty() {
+        anyhow::bail!("no tickets in {}", config.work_dir.display());
+    }
+    tui::pick_ticket(&mut tui::Tui, &tickets)
 }
 
-/// `config`: the location, the resolved YAML, or the interactive editor.
-fn config_cmd(config_path: Option<&Path>, path: bool, show: bool) -> anyhow::Result<()> {
+/// `config`: the location, the resolved YAML, the editor, or a new config from prompts.
+fn config_cmd(
+    config_path: Option<&Path>,
+    path: bool,
+    show: bool,
+    init: bool,
+    force: bool,
+) -> anyhow::Result<()> {
+    if init {
+        let target = Config::target(config_path)?;
+        if target.exists() && !force {
+            anyhow::bail!("{} exists, use `--force` to overwrite", target.display());
+        }
+        if !tui::available() {
+            anyhow::bail!("no terminal to ask for the values; write {} yourself", target.display());
+        }
+        tui::new_config(&target, &mut tui::Tui)?;
+        tracing::info!("wrote {}; `grover config` edits it", target.display());
+        return Ok(());
+    }
     let located = Config::locate(config_path)?;
     if path {
         println!("{}", located.display());

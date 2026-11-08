@@ -132,12 +132,20 @@ pub fn complete(
 }
 
 /// Ticket for `new`; the slug check happens later in `Plan::build`.
-pub fn ask_ticket(prompter: &mut dyn Prompter) -> anyhow::Result<String> {
+fn ask_ticket(prompter: &mut dyn Prompter) -> anyhow::Result<String> {
     prompter.input("Ticket", "")?.ok_or_else(abort)
 }
 
+/// Ticket for `rm`: pick from the existing ones, never a guess.
+pub fn pick_ticket(prompter: &mut dyn Prompter, tickets: &[String]) -> anyhow::Result<String> {
+    let Some(index) = prompter.select("Ticket to remove", tickets)? else {
+        return Err(abort());
+    };
+    tickets.get(index).cloned().ok_or_else(abort)
+}
+
 /// Repos for `new`: multi-select over the discovered repos, re-asked while empty.
-pub fn ask_repos(prompter: &mut dyn Prompter, config: &Config) -> anyhow::Result<Vec<String>> {
+fn ask_repos(prompter: &mut dyn Prompter, config: &Config) -> anyhow::Result<Vec<String>> {
     let repos = repo::discover(config);
     if repos.is_empty() {
         return Err(Error::NoRepos.into());
@@ -205,7 +213,7 @@ pub fn edit_config(
             4 => {
                 let current = config.clone_dir.as_deref().map(path_text).unwrap_or_default();
                 let answer = text(prompter, "clone_dir", &current)?;
-                config.clone_dir = Some(PathBuf::from(answer));
+                config.clone_dir = (!answer.is_empty()).then(|| PathBuf::from(answer));
             }
             5 => edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?,
             6 => edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?,
@@ -214,6 +222,34 @@ pub fn edit_config(
         if let Err(err) = save_and_reload(config, path) {
             tracing::warn!("not saved: {err}");
         }
+    }
+}
+
+/// `config --init`: ask every field once, then write. Nothing is written on error.
+pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
+    let work_dir = PathBuf::from(required(prompter, "work_dir")?);
+    let mut config = Config::new(work_dir);
+    config.branch_template = text(prompter, "branch_template", &config.branch_template)?;
+    config.base = text(prompter, "base", &config.base)?;
+    edit_list(prompter, "repo_dirs", &mut config.repo_dirs, |dir| path_text(dir), ask_dir)?;
+    let current = config.clone_dir.as_deref().map(path_text).unwrap_or_default();
+    let answer = text(prompter, "clone_dir", &current)?;
+    config.clone_dir = (!answer.is_empty()).then(|| PathBuf::from(answer));
+    edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
+    edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
+    config.validate()?;
+    config.save(path)?;
+    Ok(())
+}
+
+/// A value without a default: keep asking until something is typed.
+fn required(prompter: &mut dyn Prompter, prompt: &str) -> anyhow::Result<String> {
+    loop {
+        let answer = prompted(prompter, prompt, "")?;
+        if !answer.is_empty() {
+            return Ok(answer);
+        }
+        tracing::warn!("{prompt} is required");
     }
 }
 
@@ -323,11 +359,11 @@ fn path_text(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// Write, then reload: reloading re-runs the validation, a failed edit is rolled back.
+/// Validate, write, reload; on any error the file and `config` keep the old state.
 fn save_and_reload(config: &mut Config, path: &Path) -> anyhow::Result<()> {
     let previous = fs::read_to_string(path)?;
-    config.save(path)?;
-    match Config::load(Some(path)) {
+    let saved = config.validate().and_then(|()| config.save(path));
+    match saved.and_then(|()| Config::load(Some(path))) {
         Ok(reloaded) => {
             *config = reloaded;
             Ok(())
@@ -475,6 +511,16 @@ mod tests {
     }
 
     #[test]
+    fn ticket_for_rm_is_picked_from_the_list() {
+        let tickets = ["PROJ-1".to_string(), "PROJ-2".to_string()];
+        let mut script = Script::new(vec![Answer::Select(1)]);
+        assert_eq!(pick_ticket(&mut script, &tickets).expect("ticket"), "PROJ-2");
+
+        let mut abort = Script::new(vec![Answer::Abort]);
+        assert!(pick_ticket(&mut abort, &tickets).is_err());
+    }
+
+    #[test]
     fn empty_repo_pick_is_asked_again() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("remotes.yaml");
@@ -557,5 +603,64 @@ mod tests {
         edit_config(&mut config, &path, &mut script).expect("edit");
         let reloaded = Config::load(Some(&path)).expect("reload");
         assert_eq!(reloaded.repo_dirs, vec![added]);
+    }
+
+    #[test]
+    fn new_config_writes_only_the_answered_values() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("conf/config.yaml");
+        let work = tmp.path().join("tickets");
+        let code = tmp.path().join("code");
+        let mut script = Script::new(vec![
+            Answer::Input(String::new()), // work_dir is required
+            Answer::Input(work.to_str().expect("utf8").into()), // work_dir
+            Answer::Input(String::new()), // branch_template: default
+            Answer::Input("main".into()), // base
+            Answer::Select(0),            // repo_dirs: add
+            Answer::Input(code.to_str().expect("utf8").into()), // repo dir
+            Answer::Select(2),            // repo_dirs: back
+            Answer::Input(String::new()), // clone_dir: default
+            Answer::Select(1),            // repos: back
+            Answer::Select(1),            // copy: back
+        ]);
+        new_config(&path, &mut script).expect("new config");
+
+        let reloaded = Config::load(Some(&path)).expect("reload");
+        assert_eq!(reloaded.work_dir, work);
+        assert_eq!(reloaded.branch_template, "ticket/{ticket}");
+        assert_eq!(reloaded.base, "main");
+        assert_eq!(reloaded.repo_dirs, vec![code]);
+        assert!(reloaded.repos.is_empty());
+        let written = fs::read_to_string(&path).expect("read");
+        assert!(!written.contains("repos:"), "empty lists are left out: {written}");
+    }
+
+    #[test]
+    fn new_config_without_a_repo_source_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let work = tmp.path().join("tickets");
+        let mut script = Script::new(vec![
+            Answer::Input(work.to_str().expect("utf8").into()), // work_dir
+            Answer::Input(String::new()),                       // branch_template
+            Answer::Input(String::new()),                       // base
+            Answer::Select(1),                                  // repo_dirs: back, skip
+            Answer::Input(String::new()),                       // clone_dir
+            Answer::Select(1),                                  // repos: back, skip
+            Answer::Select(1),                                  // copy: back
+        ]);
+        let err = new_config(&path, &mut script).expect_err("no repo source");
+        assert!(err.to_string().contains("repo_dirs"), "{err}");
+        assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn new_config_abort_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let mut script = Script::new(vec![Answer::Abort]);
+        let err = new_config(&path, &mut script).expect_err("abort");
+        assert!(err.to_string().contains("aborted"), "{err}");
+        assert!(!path.exists(), "nothing written");
     }
 }

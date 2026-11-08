@@ -48,7 +48,7 @@ make install                                 # Binary nach ~/.local/bin
 Cargo.toml            # virtueller Workspace, gemeinsame Deps und Lints
 rustfmt.toml          # max_width = 100
 Makefile              # build, install, uninstall, check
-grover.yaml.example   # kommentierte Beispiel-Config (YAML)
+grover.yaml.example   # Format-Referenz (YAML, reine Doku)
 grover-lib/           # Core: Config, Repo-Discovery, git, Fuzzy, Plan/Apply
 grover-cli/           # bin "grover": clap, Logging, Ausgabe
 ```

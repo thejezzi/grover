@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{Config, CopySpec};
 use crate::error::{Error, Result};
+use crate::fuzzy;
 use crate::git;
 use crate::repo::{self, Repo, Source};
 
@@ -161,6 +162,70 @@ pub fn existing_tickets(config: &Config) -> Result<Vec<String>> {
     Ok(tickets)
 }
 
+/// Ticket directory for `ticket`: exact, never guessed, because `rm` deletes.
+pub fn resolve_ticket(config: &Config, ticket: &str) -> Result<PathBuf> {
+    let slug = slug(ticket)?;
+    let tickets = existing_tickets(config)?;
+    let known: Vec<&str> = tickets.iter().map(String::as_str).collect();
+    if !known.contains(&slug.as_str()) {
+        let suggestions = fuzzy::similar(&known, &slug);
+        return Err(Error::UnknownName { query: ticket.to_string(), suggestions });
+    }
+    Ok(config.work_dir.join(slug))
+}
+
+/// Remove a ticket: worktrees and branches, the `copy` files, then the directory.
+/// A failed step is a warning, so one dirty worktree does not stop the rest.
+pub fn remove(config: &Config, ticket_dir: &Path, force: bool, dry_run: bool) -> Result<()> {
+    // Collected before any removal: deleting while `read_dir` walks can skip an entry.
+    let worktrees: Vec<PathBuf> = fs::read_dir(ticket_dir)
+        .map_err(|source| Error::Io { path: ticket_dir.to_path_buf(), source })?
+        .flatten()
+        .map(|entry| entry.path())
+        // `.git` as a file is a worktree; every other child is foreign and stays.
+        .filter(|path| path.join(".git").is_file())
+        .collect();
+    for worktree in &worktrees {
+        if let Err(err) = remove_worktree(worktree, force, dry_run) {
+            tracing::warn!("{err}");
+        }
+    }
+    for spec in &config.copy {
+        match copy_target(ticket_dir, spec) {
+            Ok(copy) => remove_file(&copy.to, dry_run),
+            Err(err) => tracing::warn!("{err}"),
+        }
+    }
+    tracing::info!("removing {}", ticket_dir.display());
+    if dry_run {
+        return Ok(());
+    }
+    // `remove_dir`, not `remove_dir_all`: what grover did not create stays.
+    if let Err(err) = fs::remove_dir(ticket_dir) {
+        tracing::warn!("{} kept: {err}", ticket_dir.display());
+    }
+    Ok(())
+}
+
+/// One worktree and its branch; branch and repo come from the worktree itself.
+fn remove_worktree(worktree: &Path, force: bool, dry_run: bool) -> Result<()> {
+    let repo = git::common_dir(worktree)?;
+    let branch = git::head_branch(worktree)?;
+    tracing::info!("removing worktree {}", worktree.display());
+    if let Some(branch) = &branch {
+        tracing::info!("deleting branch {branch}");
+    }
+    if dry_run {
+        return Ok(());
+    }
+    git::worktree_remove(&repo, worktree, force)?;
+    git::worktree_prune(&repo)?;
+    match branch {
+        Some(branch) => git::branch_delete(&repo, &branch, force),
+        None => Ok(()),
+    }
+}
+
 /// Ticket slug: only `[A-Za-z0-9._-]`, no leading `-`/`.`.
 pub fn slug(ticket: &str) -> Result<String> {
     let mut slug = String::new();
@@ -187,6 +252,19 @@ fn copy_target(ticket_dir: &Path, spec: &CopySpec) -> Result<Copy> {
         )));
     };
     Ok(Copy { from: spec.from.clone(), to: ticket_dir.join(name) })
+}
+
+fn remove_file(path: &Path, dry_run: bool) {
+    if !path.exists() {
+        return;
+    }
+    tracing::info!("removing {}", path.display());
+    if dry_run {
+        return;
+    }
+    if let Err(err) = fs::remove_file(path) {
+        tracing::warn!("{} kept: {err}", path.display());
+    }
 }
 
 fn create_dir(path: &Path) -> Result<()> {
