@@ -38,7 +38,8 @@ cargo test                                   # Unit- und Integrationstests
 cargo clippy --all-targets -- -D warnings    # Lints
 cargo fmt --all --check                      # Formatierung (100 Zeichen)
 cargo run -p grover-cli -- new PROJ-123 -r api -n
-make check                                   # alle drei Kommandos oben
+make test                                    # alle Tests
+make check                                   # fmt, clippy und die Tests oben
 make install                                 # Binary nach ~/.local/bin
 ```
 

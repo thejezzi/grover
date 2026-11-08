@@ -3,7 +3,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR := $(DESTDIR)$(PREFIX)/bin
 BIN := target/release/grover
 
-.PHONY: build install uninstall check
+.PHONY: build install uninstall check test
 
 build:
 	cargo build --release
@@ -14,7 +14,9 @@ install: build
 uninstall:
 	rm -f $(BINDIR)/grover
 
-check:
+check: test
 	cargo fmt --all --check
 	cargo clippy --all-targets -- -D warnings
+
+test:
 	cargo test
