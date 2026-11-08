@@ -36,7 +36,14 @@ pub fn discover(config: &Config) -> Vec<Repo> {
                 continue;
             }
         };
-        for path in entries.flatten().map(|entry| entry.path()) {
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(err) => {
+                    tracing::warn!("{}: {err}", dir.display());
+                    continue;
+                }
+            };
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
             if !git::is_repo(&path) {
                 continue;
@@ -57,20 +64,22 @@ pub fn discover(config: &Config) -> Vec<Repo> {
 
 /// Selection: `all` or one fuzzy match per request, duplicates once.
 pub fn select<'a>(repos: &'a [Repo], requests: &[String], all: bool) -> Result<Vec<&'a Repo>> {
-    let mut picked: Vec<&Repo> = Vec::new();
     if all {
-        picked.extend(repos);
-    } else {
-        if requests.is_empty() {
-            return Err(Error::NoSelection);
+        if repos.is_empty() {
+            return Err(Error::NoRepos);
         }
-        let names: Vec<&str> = repos.iter().map(|repo| repo.name.as_str()).collect();
-        let queries = requests.iter().flat_map(|request| request.split(','));
-        for query in queries.map(str::trim).filter(|query| !query.is_empty()) {
-            let repo = &repos[fuzzy::select(&names, query)?];
-            if !picked.iter().any(|other| other.name == repo.name) {
-                picked.push(repo);
-            }
+        return Ok(repos.iter().collect());
+    }
+    if requests.is_empty() {
+        return Err(Error::NoSelection);
+    }
+    let names: Vec<&str> = repos.iter().map(|repo| repo.name.as_str()).collect();
+    let mut picked: Vec<&Repo> = Vec::new();
+    let queries = requests.iter().flat_map(|request| request.split(','));
+    for query in queries.map(str::trim).filter(|query| !query.is_empty()) {
+        let repo = &repos[fuzzy::select(&names, query)?];
+        if !picked.iter().any(|other| other.name == repo.name) {
+            picked.push(repo);
         }
     }
     if picked.is_empty() {

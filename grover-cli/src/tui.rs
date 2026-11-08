@@ -177,6 +177,19 @@ fn repo_label(repo: &repo::Repo, width: usize) -> String {
     format!("{:<width$}  {}", repo.name, source)
 }
 
+/// One line of the editor menu, in the order the user sees it.
+#[derive(Clone, Copy)]
+enum Field {
+    WorkDir,
+    BranchTemplate,
+    Base,
+    RepoDirs,
+    CloneDir,
+    Repos,
+    Copy,
+    Exit,
+}
+
 /// Config editor: one menu over all top-level fields, written after each entry.
 pub fn edit_config(
     config: &mut Config,
@@ -184,40 +197,33 @@ pub fn edit_config(
     prompter: &mut dyn Prompter,
 ) -> anyhow::Result<()> {
     loop {
-        let items = menu(config);
+        let fields = menu(config);
+        let items: Vec<String> = fields.iter().map(|(_, label)| label.clone()).collect();
         let title = format!("Config · {}", path.display());
         let Some(choice) = prompter.select(&title, &items)? else {
             return Err(abort());
         };
-        match choice {
-            0 => {
-                let current = path_text(&config.work_dir);
-                let answer = text(prompter, "work_dir", &current)?;
-                config.work_dir = PathBuf::from(answer);
+        // An index without a field leaves the editor: nothing to ask, nothing to write.
+        let field = fields.get(choice).map_or(Field::Exit, |(field, _)| *field);
+        match field {
+            Field::WorkDir => edit_path(prompter, "work_dir", &mut config.work_dir)?,
+            Field::BranchTemplate => {
+                edit_string(prompter, "branch_template", &mut config.branch_template)?
             }
-            1 => {
-                let current = config.branch_template.clone();
-                config.branch_template = text(prompter, "branch_template", &current)?;
-            }
-            2 => {
-                let current = config.base.clone();
-                config.base = text(prompter, "base", &current)?;
-            }
-            3 => edit_list(
+            Field::Base => edit_string(prompter, "base", &mut config.base)?,
+            Field::RepoDirs => edit_list(
                 prompter,
                 "repo_dirs",
                 &mut config.repo_dirs,
                 |dir| path_text(dir),
                 ask_dir,
             )?,
-            4 => {
-                let current = config.clone_dir.as_deref().map(path_text).unwrap_or_default();
-                let answer = text(prompter, "clone_dir", &current)?;
-                config.clone_dir = (!answer.is_empty()).then(|| PathBuf::from(answer));
+            Field::CloneDir => edit_optional_path(prompter, "clone_dir", &mut config.clone_dir)?,
+            Field::Repos => {
+                edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?
             }
-            5 => edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?,
-            6 => edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?,
-            _ => return Ok(()),
+            Field::Copy => edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?,
+            Field::Exit => return Ok(()),
         }
         if let Err(err) = save_and_reload(config, path) {
             tracing::warn!("not saved: {err}");
@@ -229,12 +235,10 @@ pub fn edit_config(
 pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
     let work_dir = PathBuf::from(required(prompter, "work_dir")?);
     let mut config = Config::new(work_dir);
-    config.branch_template = text(prompter, "branch_template", &config.branch_template)?;
-    config.base = text(prompter, "base", &config.base)?;
+    edit_string(prompter, "branch_template", &mut config.branch_template)?;
+    edit_string(prompter, "base", &mut config.base)?;
     edit_list(prompter, "repo_dirs", &mut config.repo_dirs, |dir| path_text(dir), ask_dir)?;
-    let current = config.clone_dir.as_deref().map(path_text).unwrap_or_default();
-    let answer = text(prompter, "clone_dir", &current)?;
-    config.clone_dir = (!answer.is_empty()).then(|| PathBuf::from(answer));
+    edit_optional_path(prompter, "clone_dir", &mut config.clone_dir)?;
     edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
     edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
     config.validate()?;
@@ -253,21 +257,24 @@ fn required(prompter: &mut dyn Prompter, prompt: &str) -> anyhow::Result<String>
     }
 }
 
-/// Labels of the editor menu, in match order; the last entry leaves the editor.
-fn menu(config: &Config) -> Vec<String> {
+/// Labels of the editor menu, in the order of [`Field`]; the last entry leaves.
+fn menu(config: &Config) -> Vec<(Field, String)> {
     vec![
-        format!("{:<18}{}", "work_dir", path_text(&config.work_dir)),
-        format!("{:<18}{}", "branch_template", config.branch_template),
-        format!("{:<18}{}", "base", config.base),
-        format!("{:<18}{}", "repo_dirs", count(config.repo_dirs.len())),
-        format!(
-            "{:<18}{}",
-            "clone_dir",
-            config.clone_dir.as_deref().map(path_text).unwrap_or_default()
+        (Field::WorkDir, format!("{:<18}{}", "work_dir", path_text(&config.work_dir))),
+        (Field::BranchTemplate, format!("{:<18}{}", "branch_template", config.branch_template)),
+        (Field::Base, format!("{:<18}{}", "base", config.base)),
+        (Field::RepoDirs, format!("{:<18}{}", "repo_dirs", count(config.repo_dirs.len()))),
+        (
+            Field::CloneDir,
+            format!(
+                "{:<18}{}",
+                "clone_dir",
+                config.clone_dir.as_deref().map(path_text).unwrap_or_default()
+            ),
         ),
-        format!("{:<18}{}", "repos", count(config.repos.len())),
-        format!("{:<18}{}", "copy", count(config.copy.len())),
-        "← exit".to_string(),
+        (Field::Repos, format!("{:<18}{}", "repos", count(config.repos.len()))),
+        (Field::Copy, format!("{:<18}{}", "copy", count(config.copy.len()))),
+        (Field::Exit, "← exit".to_string()),
     ]
 }
 
@@ -303,6 +310,32 @@ fn edit_list<T>(
             items.remove(choice - 1);
         }
     }
+}
+
+fn edit_string(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    value: &mut String,
+) -> anyhow::Result<()> {
+    *value = answer_or_current(prompter, prompt, value)?;
+    Ok(())
+}
+
+fn edit_path(prompter: &mut dyn Prompter, prompt: &str, path: &mut PathBuf) -> anyhow::Result<()> {
+    *path = PathBuf::from(answer_or_current(prompter, prompt, &path_text(path))?);
+    Ok(())
+}
+
+/// `None` when the answer is empty.
+fn edit_optional_path(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    path: &mut Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let current = path.as_deref().map(path_text).unwrap_or_default();
+    let answer = answer_or_current(prompter, prompt, &current)?;
+    *path = (!answer.is_empty()).then(|| PathBuf::from(answer));
+    Ok(())
 }
 
 fn ask_dir(prompter: &mut dyn Prompter) -> anyhow::Result<Option<PathBuf>> {
@@ -344,8 +377,12 @@ fn copy_label(copy: &CopySpec) -> String {
     }
 }
 
-/// One text answer, trimmed; empty keeps the current value.
-fn text(prompter: &mut dyn Prompter, prompt: &str, current: &str) -> anyhow::Result<String> {
+/// One text answer, trimmed; empty keeps `current`.
+fn answer_or_current(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    current: &str,
+) -> anyhow::Result<String> {
     let answer = prompted(prompter, prompt, current)?;
     Ok(if answer.is_empty() { current.to_string() } else { answer })
 }

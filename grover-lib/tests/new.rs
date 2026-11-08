@@ -1,9 +1,11 @@
 //! Integration tests against real git repos in a `TempDir`.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
+use common::git;
 use grover_lib::config::Config;
 use grover_lib::plan::{Plan, Request};
 use tempfile::TempDir;
@@ -53,18 +55,6 @@ impl Fixture {
     fn plan(&self, request: Request) -> Plan {
         Plan::build(&self.load(), &request).expect("plan")
     }
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=grover", "-c", "user.email=grover@example.com"])
-        .args(args)
-        .output()
-        .expect("git starts");
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// Fixture config plus extra top-level keys, e.g. `base: "main|HEAD"`.

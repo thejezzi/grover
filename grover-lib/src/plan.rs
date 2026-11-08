@@ -1,4 +1,4 @@
-//! Build the plan (read only) and apply it (writes).
+//! Plan a ticket directory (`new`), then list, resolve and remove tickets.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -116,8 +116,8 @@ impl Plan {
             report.skipped.push(worktree.path.clone());
             return Ok(());
         }
-        let (name, path) = (&worktree.repo.name, worktree.path.display());
-        tracing::info!("worktree {name} ({}) in {path}", self.branch);
+        let path = worktree.path.display();
+        tracing::info!("worktree {} ({}) in {path}", worktree.repo.name, self.branch);
         if !dry_run {
             git::worktree_add(&worktree.repo.path, &worktree.path, &self.branch, &self.base)?;
         }
@@ -153,11 +153,19 @@ pub fn existing_tickets(config: &Config) -> Result<Vec<String>> {
             return Err(Error::Io { path: config.work_dir.clone(), source });
         }
     };
-    let mut tickets: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+    let mut tickets: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::warn!("{}: {err}", config.work_dir.display());
+                continue;
+            }
+        };
+        if entry.path().is_dir() {
+            tickets.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
     tickets.sort();
     Ok(tickets)
 }
@@ -178,13 +186,22 @@ pub fn resolve_ticket(config: &Config, ticket: &str) -> Result<PathBuf> {
 /// A failed step is a warning, so one dirty worktree does not stop the rest.
 pub fn remove(config: &Config, ticket_dir: &Path, force: bool, dry_run: bool) -> Result<()> {
     // Collected before any removal: deleting while `read_dir` walks can skip an entry.
-    let worktrees: Vec<PathBuf> = fs::read_dir(ticket_dir)
+    let mut worktrees: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(ticket_dir)
         .map_err(|source| Error::Io { path: ticket_dir.to_path_buf(), source })?
-        .flatten()
-        .map(|entry| entry.path())
+    {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                tracing::warn!("{}: {err}", ticket_dir.display());
+                continue;
+            }
+        };
         // `.git` as a file is a worktree; every other child is foreign and stays.
-        .filter(|path| path.join(".git").is_file())
-        .collect();
+        if path.join(".git").is_file() {
+            worktrees.push(path);
+        }
+    }
     for worktree in &worktrees {
         if let Err(err) = remove_worktree(worktree, force, dry_run) {
             tracing::warn!("{err}");

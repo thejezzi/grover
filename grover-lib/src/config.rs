@@ -90,8 +90,7 @@ impl Config {
 
     /// Location: `--config`, else `./grover.yaml`, else the XDG path.
     pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
-        let cwd =
-            std::env::current_dir().map_err(|source| Error::Io { path: ".".into(), source })?;
+        let cwd = cwd()?;
         if let Some(path) = explicit {
             let path = absolute(path, &cwd);
             return if path.exists() { Ok(path) } else { Err(Error::ConfigMissing(path)) };
@@ -100,7 +99,7 @@ impl Config {
         if local.exists() {
             return Ok(local);
         }
-        let xdg = dirs::config_dir().map(|dir| dir.join("grover/config.yaml"));
+        let xdg = xdg_path();
         match &xdg {
             Some(path) if path.exists() => Ok(path.clone()),
             _ => Err(Error::ConfigMissing(xdg.unwrap_or(local))),
@@ -110,17 +109,12 @@ impl Config {
     /// Where `config --init` writes: `--config`, else an existing config, else the XDG path.
     pub fn target(explicit: Option<&Path>) -> Result<PathBuf> {
         if let Some(path) = explicit {
-            let cwd =
-                std::env::current_dir().map_err(|source| Error::Io { path: ".".into(), source })?;
-            return Ok(absolute(path, &cwd));
+            return Ok(absolute(path, &cwd()?));
         }
         if let Ok(path) = Config::locate(None) {
             return Ok(path);
         }
-        match dirs::config_dir() {
-            Some(dir) => Ok(dir.join("grover/config.yaml")),
-            None => Err(Error::ConfigInvalid("no config directory (HOME unset)".into())),
-        }
+        xdg_path().ok_or_else(|| Error::ConfigInvalid("no config directory (HOME unset)".into()))
     }
 
     /// Read, resolve paths, validate.
@@ -212,6 +206,15 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn cwd() -> Result<PathBuf> {
+    std::env::current_dir().map_err(|source| Error::Io { path: ".".into(), source })
+}
+
+/// `$XDG_CONFIG_HOME/grover/config.yaml`, the last resort for reading and writing.
+fn xdg_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("grover/config.yaml"))
 }
 
 fn absolute(path: &Path, cwd: &Path) -> PathBuf {

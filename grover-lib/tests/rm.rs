@@ -1,9 +1,12 @@
 //! Integration tests for `rm` against real git repos in a `TempDir`.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::git;
 use grover_lib::config::Config;
 use grover_lib::plan::{self, Plan, Request};
 use tempfile::TempDir;
@@ -65,18 +68,6 @@ fn add_repo(code: &Path, name: &str) -> PathBuf {
     git(&repo, &["init", "-q"]);
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
     repo
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=grover", "-c", "user.email=grover@example.com"])
-        .args(args)
-        .output()
-        .expect("git starts");
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn branch_exists(repo: &Path, branch: &str) -> bool {
