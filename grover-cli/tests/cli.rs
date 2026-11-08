@@ -201,3 +201,23 @@ fn list_without_a_work_dir_is_empty() {
     assert_eq!(out(&listed), "");
     assert!(!root.path().join("tickets").exists());
 }
+
+#[test]
+fn path_prints_the_ticket_dir_from_the_argument_or_the_cwd() {
+    let (root, config) = fixture();
+    let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket = root.path().join("tickets/PROJ-1");
+
+    let named = run(root.path(), &["path", "PROJ-1", "-c", &config]);
+    assert_eq!(named.status.code(), Some(0), "{}", err(&named));
+    assert_eq!(out(&named), ticket.display().to_string());
+
+    let inside = run(&ticket.join("api"), &["path", "-c", &config]);
+    assert_eq!(inside.status.code(), Some(0), "{}", err(&inside));
+    assert_eq!(out(&inside), ticket.display().to_string());
+
+    let outside = run(root.path(), &["path", "-c", &config]);
+    assert_eq!(outside.status.code(), Some(1));
+    assert_eq!(out(&outside), "", "stdout stays empty");
+}

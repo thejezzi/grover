@@ -58,6 +58,11 @@ enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
+    /// Print the directory of a ticket
+    Path {
+        /// Ticket, e.g. PROJ-123; the ticket above the cwd when omitted
+        ticket: Option<String>,
+    },
     /// Edit the config interactively on a terminal
     Config {
         /// Show the config location only
@@ -121,6 +126,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             if dry_run {
                 tracing::info!("dry-run: nothing removed");
             }
+        }
+        Command::Path { ticket } => {
+            let config = Config::load(config_path)?;
+            let dir = match ticket {
+                Some(ticket) => plan::find_ticket(&config, &ticket)?,
+                None => plan::ticket_above(&config, &std::env::current_dir()?)?,
+            };
+            println!("{}", dir.display());
         }
         Command::Config { path, show, init, force } => {
             config_cmd(config_path, path, show, init, force)?

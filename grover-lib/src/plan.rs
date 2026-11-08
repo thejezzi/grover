@@ -1,7 +1,7 @@
 //! Plan a ticket directory (`new`), then list, resolve and remove tickets.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::config::{Config, CopySpec};
 use crate::error::{Error, Result};
@@ -182,6 +182,29 @@ pub fn resolve_ticket(config: &Config, ticket: &str) -> Result<PathBuf> {
     Ok(config.work_dir.join(slug))
 }
 
+/// Ticket directory for `ticket` to read from: exact, else the single fuzzy match.
+pub fn find_ticket(config: &Config, ticket: &str) -> Result<PathBuf> {
+    let slug = slug(ticket)?;
+    let tickets = existing_tickets(config)?;
+    let known: Vec<&str> = tickets.iter().map(String::as_str).collect();
+    let index = match known.iter().position(|name| *name == slug.as_str()) {
+        Some(index) => index,
+        None => fuzzy::select(&known, &slug)?,
+    };
+    Ok(config.work_dir.join(&tickets[index]))
+}
+
+/// Ticket directory above `dir`: the first path segment below `work_dir`.
+pub fn ticket_above(config: &Config, dir: &Path) -> Result<PathBuf> {
+    // shortcut: paths are compared as written, so a symlinked work_dir never matches.
+    let work_dir = &config.work_dir;
+    let segment = dir.strip_prefix(work_dir).ok().and_then(|rest| rest.components().next());
+    match segment {
+        Some(Component::Normal(name)) => Ok(work_dir.join(name)),
+        _ => Err(Error::NotInWorkDir { dir: dir.to_path_buf(), work_dir: work_dir.clone() }),
+    }
+}
+
 /// Remove a ticket: worktrees and branches, the `copy` files, then the directory.
 /// A failed step is a warning, so one dirty worktree does not stop the rest.
 pub fn remove(config: &Config, ticket_dir: &Path, force: bool, dry_run: bool) -> Result<()> {
@@ -298,6 +321,32 @@ mod tests {
         assert_eq!(slug("PROJ-123").expect("slug"), "PROJ-123");
         assert_eq!(slug("  proj 42 ").expect("slug"), "proj-42");
         assert_eq!(slug("tickets/PROJ-9/").expect("slug"), "tickets-PROJ-9");
+    }
+
+    #[test]
+    fn a_ticket_is_found_exactly_or_by_its_only_fuzzy_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for ticket in ["PROJ-1", "PROJ-12", "ABC-7"] {
+            fs::create_dir(dir.path().join(ticket)).expect("ticket");
+        }
+        let config = Config::new(dir.path().to_path_buf());
+
+        assert_eq!(find_ticket(&config, "PROJ-12").expect("exact"), dir.path().join("PROJ-12"));
+        assert_eq!(find_ticket(&config, "proj-3").expect("fuzzy"), dir.path().join("PROJ-1"));
+        assert!(matches!(find_ticket(&config, "PROJ"), Err(Error::AmbiguousName { .. })));
+        assert!(matches!(find_ticket(&config, "ZZZ"), Err(Error::UnknownName { .. })));
+    }
+
+    #[test]
+    fn the_ticket_above_is_the_first_segment_below_the_work_dir() {
+        let config = Config::new(PathBuf::from("/work/tickets"));
+
+        let inside = ticket_above(&config, Path::new("/work/tickets/PROJ-1/api/src"));
+        assert_eq!(inside.expect("above"), PathBuf::from("/work/tickets/PROJ-1"));
+
+        let at_work_dir = ticket_above(&config, Path::new("/work/tickets")).expect_err("work dir");
+        assert!(at_work_dir.to_string().contains("no ticket folder above"), "{at_work_dir}");
+        assert!(ticket_above(&config, Path::new("/elsewhere/PROJ-1")).is_err());
     }
 
     #[test]

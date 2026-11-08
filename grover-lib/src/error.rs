@@ -33,6 +33,8 @@ pub enum Error {
     AmbiguousName { query: String, candidates: String },
     #[error("ticket \"{0}\" yields no directory name")]
     InvalidTicket(String),
+    #[error("no ticket folder above {} in {}", .dir.display(), .work_dir.display())]
+    NotInWorkDir { dir: PathBuf, work_dir: PathBuf },
     #[error("repo {}: none of the base refs \"{bases}\" exists", .repo.display())]
     BaseMissing { repo: PathBuf, bases: String },
     #[error("{}: {source}", .path.display())]
