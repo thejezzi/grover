@@ -78,6 +78,7 @@ fn request(ticket: &str, repos: &[&str]) -> Request {
         ticket: ticket.to_string(),
         repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
         all: false,
+        ..Request::default()
     }
 }
 
@@ -237,4 +238,20 @@ fn missing_base_refs_fail_with_their_names() {
     let err = plan.apply(false).expect_err("no base ref");
     assert!(err.to_string().contains("nope"), "{err}");
     assert!(err.to_string().contains("also-nope"), "{err}");
+}
+#[test]
+fn a_title_slug_lands_in_the_branch_but_not_the_folder() {
+    let fixture = Fixture::new();
+    let mut request = request("PROJ-11", &["api"]);
+    request.title = Some("Login redirect loop".to_string());
+    request.slug_from_title = true;
+    let plan = fixture.plan(request);
+    plan.apply(false).expect("apply");
+
+    assert_eq!(plan.branch, "ticket/PROJ-11-login-redirect-loop");
+    assert_eq!(plan.ticket_dir, fixture.tickets().join("PROJ-11"));
+    assert_eq!(
+        git(&plan.ticket_dir.join("api"), &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "ticket/PROJ-11-login-redirect-loop"
+    );
 }

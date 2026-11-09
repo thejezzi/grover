@@ -16,6 +16,10 @@ pub struct Request {
     pub ticket: String,
     pub repos: Vec<String>,
     pub all: bool,
+    /// Optional ticket title, used for the branch name when `slug_from_title` is set.
+    pub title: Option<String>,
+    /// Build the branch name from the title instead of the ticket alone.
+    pub slug_from_title: bool,
 }
 
 /// What will be created.
@@ -56,7 +60,7 @@ impl Plan {
     /// Resolve repos and compute targets; writes nothing.
     pub fn build(config: &Config, request: &Request) -> Result<Plan> {
         let slug = slug(&request.ticket)?;
-        let branch = config.branch_template.replace("{ticket}", &slug);
+        let branch = branch_name(config, &slug, request);
         let ticket_dir = config.work_dir.join(&slug);
 
         let repos = repo::discover(config);
@@ -368,6 +372,24 @@ fn remove_worktree(worktree: &Path, force: bool, dry_run: bool) -> Result<()> {
     }
 }
 
+/// Branch name: the template with the ticket slug, plus the title slug when asked.
+fn branch_name(config: &Config, ticket_slug: &str, request: &Request) -> String {
+    let title = match (&request.title, request.slug_from_title) {
+        (Some(title), true) => title_slug(title).or_else(|| {
+            tracing::warn!("title {title:?} yields no slug; using the ticket only");
+            None
+        }),
+        _ => None,
+    };
+    let Some(title) = title else {
+        return config.branch_template.replace("{ticket}", ticket_slug);
+    };
+    if !config.create_branch {
+        tracing::warn!("title slug ignored, `create_branch` is off");
+    }
+    config.branch_template.replace("{ticket}", &format!("{ticket_slug}-{title}"))
+}
+
 /// Ticket slug: only `[A-Za-z0-9._-]`, no leading `-`/`.`.
 pub fn slug(ticket: &str) -> Result<String> {
     let mut slug = String::new();
@@ -383,6 +405,57 @@ pub fn slug(ticket: &str) -> Result<String> {
         return Err(Error::InvalidTicket(ticket.to_string()));
     }
     Ok(slug.to_string())
+}
+
+/// Words that carry no meaning in a branch name; German ones are included because
+/// the titles come from a German ticket system.
+const FILLER: [&str; 19] = [
+    "a", "an", "the", "of", "to", "for", "and", "in", "on", "with", "der", "die", "das", "und",
+    "von", "fuer", "im", "zu", "mit",
+];
+
+/// Max words and characters a title slug keeps.
+const TITLE_WORDS: usize = 5;
+const TITLE_CHARS: usize = 48;
+
+/// Branch-safe slug from a ticket title: lowercase, filler words dropped,
+/// capped at five words and 48 characters. `None` when nothing usable is left.
+fn title_slug(title: &str) -> Option<String> {
+    let cleaned = transliterate(title);
+    let words: Vec<&str> = cleaned.split('-').filter(|word| !word.is_empty()).collect();
+    let meaningful: Vec<&str> =
+        words.iter().copied().filter(|word| !FILLER.contains(word)).collect();
+    // A title of nothing but filler words is still a title; keep them rather than fail.
+    let words = if meaningful.is_empty() { words } else { meaningful };
+    let mut slug = String::new();
+    for word in words.into_iter().take(TITLE_WORDS) {
+        let next = if slug.is_empty() { word.len() } else { slug.len() + 1 + word.len() };
+        if next > TITLE_CHARS {
+            break;
+        }
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(word);
+    }
+    (!slug.is_empty()).then_some(slug)
+}
+
+/// Lowercase ASCII words joined by single dashes: `Über Größe` becomes `ueber-groesse`.
+fn transliterate(text: &str) -> String {
+    let mut out = String::new();
+    for char in text.chars() {
+        match char {
+            'ä' | 'Ä' => out.push_str("ae"),
+            'ö' | 'Ö' => out.push_str("oe"),
+            'ü' | 'Ü' => out.push_str("ue"),
+            'ß' => out.push_str("ss"),
+            char if char.is_ascii_alphanumeric() => out.push(char.to_ascii_lowercase()),
+            _ if !out.ends_with('-') => out.push('-'),
+            _ => {}
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 fn copy_target(ticket_dir: &Path, spec: &CopySpec) -> Result<Copy> {
@@ -454,5 +527,86 @@ mod tests {
     #[test]
     fn empty_slug_is_an_error() {
         assert!(matches!(slug(" -/. "), Err(Error::InvalidTicket(_))));
+    }
+
+    #[test]
+    fn a_title_becomes_a_branch_slug() {
+        assert_eq!(title_slug("Login redirect loop").expect("slug"), "login-redirect-loop");
+        assert_eq!(title_slug("Fix the bug in the login").expect("slug"), "fix-bug-login");
+        assert_eq!(title_slug("  Mehr   Platz  ").expect("slug"), "mehr-platz");
+        assert_eq!(title_slug("A/B-Test: 50% roll-out").expect("slug"), "b-test-50-roll-out");
+    }
+
+    #[test]
+    fn a_title_slug_transliterates_umlauts() {
+        assert_eq!(title_slug("Über Größe").expect("slug"), "ueber-groesse");
+        assert_eq!(title_slug("Prüfung für Straße").expect("slug"), "pruefung-strasse");
+    }
+
+    #[test]
+    fn a_title_slug_keeps_five_words_and_forty_eight_characters() {
+        let slug = title_slug("one two three four five six seven").expect("slug");
+        assert_eq!(slug, "one-two-three-four-five");
+        let long =
+            title_slug("aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee").expect("slug");
+        assert!(long.len() <= TITLE_CHARS, "{long} is {} chars", long.len());
+        assert!(long.starts_with("aaaaaaaaaa-bbbbbbbbbb"), "{long}");
+    }
+
+    #[test]
+    fn a_title_of_only_filler_words_keeps_them() {
+        assert_eq!(title_slug("the of and").expect("slug"), "the-of-and");
+    }
+
+    #[test]
+    fn a_title_without_letters_or_digits_has_no_slug() {
+        assert_eq!(title_slug("---"), None);
+        assert_eq!(title_slug("   "), None);
+    }
+
+    #[test]
+    fn a_title_only_changes_the_branch_when_asked() {
+        let config = Config::new(PathBuf::from("/work/tickets"));
+        let plain = Request { ticket: "PROJ-1".into(), ..Request::default() };
+        assert_eq!(branch_name(&config, "PROJ-1", &plain), "ticket/PROJ-1");
+
+        let titled = Request {
+            ticket: "PROJ-1".into(),
+            title: Some("Login redirect loop".into()),
+            ..Request::default()
+        };
+        assert_eq!(
+            branch_name(&config, "PROJ-1", &titled),
+            "ticket/PROJ-1",
+            "title alone does nothing"
+        );
+
+        let asked = Request { slug_from_title: true, ..titled };
+        assert_eq!(branch_name(&config, "PROJ-1", &asked), "ticket/PROJ-1-login-redirect-loop");
+    }
+
+    #[test]
+    fn the_title_slug_follows_the_template() {
+        let mut config = Config::new(PathBuf::from("/work/tickets"));
+        config.branch_template = "feat/{ticket}".into();
+        let request = Request {
+            ticket: "PROJ-9".into(),
+            title: Some("Add dark mode".into()),
+            slug_from_title: true,
+            ..Request::default()
+        };
+        assert_eq!(branch_name(&config, "PROJ-9", &request), "feat/PROJ-9-add-dark-mode");
+    }
+
+    #[test]
+    fn a_title_without_usable_words_falls_back_to_the_ticket() {
+        let config = Config::new(PathBuf::from("/work/tickets"));
+        let request = Request {
+            ticket: "PROJ-2".into(),
+            title: Some("---".into()),
+            slug_from_title: true,
+            ..Request::default()
+        };
+        assert_eq!(branch_name(&config, "PROJ-2", &request), "ticket/PROJ-2");
     }
 }

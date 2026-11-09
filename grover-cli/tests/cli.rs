@@ -25,6 +25,11 @@ fn err(output: &Output) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) {
+    git_out(dir, args);
+}
+
+/// `git` that returns trimmed stdout; panics on a failing command.
+fn git_out(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -33,6 +38,7 @@ fn git(dir: &Path, args: &[&str]) {
         .output()
         .expect("git starts");
     assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// Config with a work dir and one repo dir; `code/api` exists as a real repo.
@@ -277,6 +283,41 @@ fn failed_setup_warns_but_keeps_the_worktree_and_succeeds() {
     let worktree = root.path().join("tickets/PROJ-3/api");
     assert!(worktree.join(".git").exists());
     assert_eq!(fs::read_to_string(worktree.join("after-failure.txt")).expect("next setup"), "done");
+}
+
+#[test]
+fn new_with_a_title_puts_its_slug_in_the_branch() {
+    let (root, config) = fixture();
+    let created = run(
+        root.path(),
+        &[
+            "new",
+            "PROJ-2",
+            "-r",
+            "api",
+            "-c",
+            &config,
+            "--title",
+            "Login redirect loop",
+            "--slug-from-title",
+        ],
+    );
+
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket = root.path().canonicalize().expect("root").join("tickets/PROJ-2");
+    assert_eq!(out(&created), ticket.display().to_string(), "the path keeps the ticket slug");
+    let branch = git_out(&ticket.join("api"), &["branch", "--show-current"]);
+    assert_eq!(branch, "ticket/PROJ-2-login-redirect-loop");
+}
+
+#[test]
+fn slug_from_title_without_a_title_is_a_usage_error() {
+    let (root, config) = fixture();
+    let refused =
+        run(root.path(), &["new", "PROJ-3", "-r", "api", "-c", &config, "--slug-from-title"]);
+
+    assert_eq!(refused.status.code(), Some(2), "clap rejects it: {}", err(&refused));
+    assert!(!root.path().join("tickets/PROJ-3").exists(), "nothing written");
 }
 
 #[test]

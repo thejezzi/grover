@@ -48,6 +48,7 @@ impl Fixture {
             ticket: name.to_string(),
             repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
             all: false,
+            ..Request::default()
         };
         let plan = Plan::build(&self.load(), &request).expect("plan");
         plan.apply(false).expect("apply");

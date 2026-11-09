@@ -8,7 +8,8 @@ that page, the link is the place to go.
 `grover` is a single binary with seven subcommands:
 
 ```text
-grover new [<ticket>] [-r|--repo <name>]... [-a|--all] [-n|--dry-run]
+grover new [<ticket>] [-r|--repo <name>]... [-a|--all]
+           [-t|--title <text>] [--slug-from-title] [-n|--dry-run]
 grover list
 grover path [<ticket>]
 grover status [<ticket>]
@@ -41,9 +42,10 @@ read the config at all, and `grover config --init` creates a config instead of r
 
 Verbosity changes what is written to stderr, never what is written to stdout. The default
 level reports each created folder, worktree, setup command and copy as one line, plus a
-summary line with the counts of created, skipped and cloned items. `-q` keeps warnings and errors and drops
-those progress lines; `-v` adds debug output. Setting the environment variable `GROVER_LOG`
-overrides both flags; its value is a log filter such as `debug` or `grover_lib=trace`.
+summary line with the counts of created, skipped and cloned items. `-q` keeps warnings and
+errors and drops those progress lines; `-v` adds debug output. Setting the environment
+variable `GROVER_LOG` overrides both flags; its value is a log filter such as `debug` or
+`grover_lib=trace`.
 
 `git` is called with `GIT_TERMINAL_PROMPT=0`, so a repository that needs interactive
 credentials fails instead of waiting for input. Setup commands inherit `GROVER_REPO` and
@@ -80,7 +82,8 @@ already confirmed.
 ## grover new
 
 ```text
-grover new [<ticket>] [-r|--repo <name>]... [-a|--all] [-n|--dry-run]
+grover new [<ticket>] [-r|--repo <name>]... [-a|--all]
+           [-t|--title <text>] [--slug-from-title] [-n|--dry-run]
 ```
 
 `new` creates the ticket folder, a worktree for each selected repository — a second checkout
@@ -107,6 +110,8 @@ $ cd "$(grover new PROJ-123 -r api)"
 | `<ticket>` | Ticket name; asked on a terminal when omitted |
 | `-r`, `--repo <name>` | Repository name, fuzzy; repeat or separate with commas |
 | `-a`, `--all` | Every known repository; cannot be combined with `-r` |
+| `-t`, `--title <text>` | Ticket title, e.g. `"Login redirect loop"` |
+| `--slug-from-title` | Put a slug of the title into the branch name; needs `--title` |
 | `-n`, `--dry-run` | Print the plan (folders, worktrees, copies) and write nothing |
 
 The repository names are matched with the fuzzy ladder described in
@@ -127,10 +132,12 @@ or ambiguous, or the config is invalid. Writing creates the ticket folder (inclu
 parent folders), clones remote repositories that are not present yet, adds one worktree per
 repository, runs `setup` for each new worktree, and then copies the files from `copy`.
 
-Each new branch starts at the first existing ref of `base` in that repository — a ref is a
-git name for a commit — or is reused if a branch with that name already exists. The whole
-order is: ticket folder, then for each repository the clone, worktree and setup commands,
-then the copies.
+With `create_branch: true`, each worktree gets the branch from `branch_template`, starting at
+the first existing ref of `base` in that repository — a ref is a git name for a commit — or is
+reused if a branch with that name already exists. The default is `create_branch: false`, which
+adds the worktree detached at that ref instead: no branch per repository. The whole order is:
+ticket folder, then for each repository the clone, worktree and setup commands, then the
+copies.
 
 Paths that already exist are skipped with a warning, and the run still ends with exit code
 0. This makes the command idempotent, and it allows a later call to add a repository to an
@@ -142,6 +149,28 @@ $ grover new PROJ-123 -r web    # adds web/ to the ticket that already has api/
 
 Nothing is ever overwritten. Existing files at a copy destination stay untouched, and an
 existing worktree is left as it is.
+
+### A branch name that says what the ticket is about
+
+`branch_template` turns the ticket into a name, so `PROJ-123` becomes `ticket/PROJ-123`. Pass
+a title and ask for a slug of it, and the branch says more:
+
+```console
+$ grover new PROJ-123 -r api --title "Login redirect loop" --slug-from-title
+$ git -C ~/work/tickets/PROJ-123/api branch --show-current
+ticket/PROJ-123-login-redirect-loop
+```
+
+The slug is built locally, without a model: lowercase, non-alphanumeric characters become
+`-`, umlauts become `ae`/`oe`/`ue`/`ss`, filler words such as `a`, `the`, `of`, `der`, `und`
+are dropped, and the result keeps at most five words and 48 characters. The template's shape
+is unchanged, so `feat/{ticket}` yields `feat/PROJ-123-login-redirect-loop`. The ticket
+folder stays `PROJ-123`: the title affects the branch, not the path.
+
+Two things to know: `--slug-from-title` without `--title` is a command-line error, and with
+`create_branch: false` — the default — the title is ignored with a warning, because no branch
+is created to carry the name. A title that leaves no usable characters after cleaning, such
+as `---`, produces the same warning and the plain ticket branch.
 
 ### Dry run
 
@@ -159,6 +188,8 @@ $ grover new PROJ-123 -r api,web             # two, comma separated
 $ grover new PROJ-123 -r api -r web          # the same, repeated
 $ grover new PROJ-123 --all                  # every known repository
 $ grover new "PROJ 123/foo" -r api --dry-run # slug: PROJ-123-foo
+$ grover new PROJ-123 -r api \
+    --title "Login redirect loop" --slug-from-title  # ticket/PROJ-123-login-redirect-loop
 ```
 
 The ticket name is the one from your issue tracker; it does not have to be filesystem-safe.

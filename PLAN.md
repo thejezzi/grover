@@ -1,9 +1,9 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, dazu Branch opt-in, `clone_dir` opt-in,
+Status: Abschnitte 1–11 und 12.1–12.8 umgesetzt, dazu Branch opt-in, `clone_dir` opt-in,
 `discover` und der eigene Listen-Prompt; mit `gh` durchgespielt, `make check` grün
-(126 Tests). Abschnitt 12 ist die priorisierte Liste der nächsten Features; 12.8 bekommt vor
-dem Code sein Go.
+(135 Tests). Abschnitt 12 ist die priorisierte Liste; offen sind dort nur noch das Backlog
+(12.9) und der Durchlauf mit einer echten Config.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -180,8 +180,8 @@ grover completions <bash|zsh|fish|...>
 - `--repo` ist fuzzy, mehrfach oder kommagetrennt; `--all` nimmt alle.
 - Fehlen Ticket, `--repo` und `--all`, fragt `new` nach — aber nur mit TTY (Abschnitt 11.3).
   Ohne TTY bleibt es beim Fehler, es wird nichts angelegt.
-- `--title` beschreibt das Ticket für `ai.branch_name` (12.8); ohne Titel fragt `new` auf
-  einem TTY danach, wenn `ai` konfiguriert ist.
+- `--title` beschreibt das Ticket; mit `--slug-from-title` wird daraus der sprechende
+  Branch-Name (12.8). Ohne Titel ist das Flag ein Fehler.
 - `--dry-run` zeigt Plan und Aktionen, ohne zu schreiben.
 - `list` zeigt nur vorhandene Work Items: die Namen der direkten Ticket-Unterordner von
   `work_dir`, alphabetisch sortiert und ohne Zusatzspalten. Dateien werden ignoriert;
@@ -204,9 +204,9 @@ grover completions <bash|zsh|fish|...>
    Namen: lokaler Eintrag gewinnt. Ohne `clone_dir` bleiben `repos`/`discover` ungenutzt.
 3. Fehlende Angaben erfragen, nur wenn stdin ein TTY ist: Ticket und/oder Repo-Auswahl
    (Abschnitt 11.3). Ohne TTY: Fehler wie bisher.
-4. Ticket zu Slug normalisieren (nur `[A-Za-z0-9._-]`, keine führenden `-`/`.`), Branch
-   aus `branch_template` — oder aus `ai.branch_name`, wenn konfiguriert (12.8); bei
-   Fehlschlag bleibt es beim Template. Ticket-Ordner aus `work_dir` + Slug.
+4. Ticket zu Slug normalisieren (nur `[A-Za-z0-9._-]`, keine führenden `-`/`.`). Branch
+   aus `branch_template`; mit `--slug-from-title` wird der Slug aus dem Titel gebildet
+   statt aus dem Ticket (12.8). Ticket-Ordner aus `work_dir` + Ticket-Slug.
 5. Auswahl per Fuzzy auflösen; Plan bauen (`worktrees`, `copies`, `create_branch`).
 6. `apply`: Ticket-Ordner anlegen, pro Repo einen Worktree auf dem ersten dort
    existierenden Ref aus `base` anlegen — mit Branch nur bei `create_branch: true`, sonst
@@ -275,8 +275,9 @@ grover completions <bash|zsh|fish|...>
   Kein `fetch` im Normallauf, höchstens opt-in (12.9).
 - Keine Doku-Generierung (Handbuch, Manpage); `README.md` und `docs/` werden von Hand
   gepflegt.
-- Keine eingebaute LLM-Anbindung: Branch-Namen per AI laufen über ein konfiguriertes
-  Kommando (12.8), nicht über einen HTTP-Client im Binary.
+- Keine eingebaute LLM-Anbindung und keine Modell-Gewichte in der Binary: sprechende
+  Branch-Namen entstehen lokal aus dem Titel (12.8). Ein Modell, falls je gewünscht,
+  bleibt ein externes Kommando.
 - Keine Kommentar-Erhaltung beim interaktiven Schreiben der Config.
 - Kein Bearbeiten einzelner Listeneinträge (nur hinzufügen und entfernen).
 
@@ -305,6 +306,7 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.5 Pfad-Autovervollständigung per Tab (111 Tests)
 - [x] `create_branch` als Opt-in, `clone_dir` ohne Default, `discover`-Kommandos
 - [x] Eigener Listen-Prompt: `j`/`k` bewegen, Suche erst nach `/` (125 Tests)
+- [x] 12.8 Sprechender Branch-Name aus `--title` (135 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -396,9 +398,9 @@ $ grover new
 
 ## 12. Roadmap (in dieser Reihenfolge)
 
-Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.7 sind umgesetzt; 12.8
-bekommt vor dem Code sein Go. Die Tests aus Abschnitt 8 gelten mit. 12.9 ist Backlog, 12.10
-ist die Absage.
+Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.8 sind umgesetzt; offen
+ist nur noch der Durchlauf mit einer echten Config. Die Tests aus Abschnitt 8 gelten mit.
+12.9 ist Backlog, 12.10 die Absage.
 
 12.5–12.7 sind ein Paket (Bequemlichkeit des Wizards) und fassen dieselbe `Prompter`-API
 an; gebaut wurden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
@@ -548,8 +550,7 @@ macht, steht nur in dieser Datei. Und wer einen Wert ändern will, klickt sich d
   `base`, `clone_dir`) Name, Setter `fn(&mut Config, &str)` und einen Satz Hilfe
   (Aufgabe, Beispiel, was Enter tut). Sie speist `--set`, Editor und `--init`:
   `edit_string`, `edit_path` und `edit_optional_path` werden zu einem Weg, `required`
-  zu „der Setter lehnt leer ab, also nochmal fragen“. `ai.branch_name` kommt erst mit
-  12.8 in die Tabelle.
+  zu „der Setter lehnt leer ab, also nochmal fragen“.
 - Die Hilfe steht dauerhaft als `help_message` unter dem Prompt und als zweite Spalte in
   der Menüzeile (`work_dir  ~/work/tickets  where tickets go`); Listenfelder bekommen ihren
   Satz in `menu`. Kein `?`-Key: `inquire` 0.9.4 kennt keine Help-Action, `?` landet im
@@ -601,48 +602,44 @@ geprüft): Esc kommt als `OperationCanceled` an, Ctrl-C als `OperationInterrupte
   schreibt nichts; Enter ohne Eingabe nimmt den Default; vorhandene Werte erscheinen als
   Default.
 
-### 12.8 Branch-Name aus einem lokalen Modell
+### 12.8 Sprechender Branch-Name aus dem Titel (umgesetzt)
 
-`branch_template` macht aus dem Ticket einen Namen. Ein lokales Modell kann aus dem Titel
-einen sprechenden machen (`ticket/PROJ-123-login-redirect-loop`).
+`branch_template` macht aus dem Ticket einen Namen (`ticket/PROJ-123`). Wer dem Ticket einen
+Titel mitgibt, bekommt einen Namen, der etwas aussagt:
 
-Analyse (auf dieser Maschine geprüft, 09.11.2026):
-
-- `ollama` ist installiert (llama3.1:8b, gemma4:31b, phi4, deepseek-r1:14b); `llm`,
-  `llama-cli` und `lms` sind es nicht. Ein 8B-Modell antwortet auf einen Einzeiler in rund
-  4–6 s, wenn es geladen ist.
-- `ollama run` schreibt eine Vorrede („Here is a kebab-case branch name: …“) nach stdout
-  und einen Spinner nach stderr. Der Parser braucht deshalb die letzte nicht-leere Zeile,
-  nicht die ganze Ausgabe; `--hidethinking` unterdrückt den Denk-Block von R1-Modellen.
-- Ergebnis: kein HTTP-Client, kein Modell-API, keine neue Dependency. Das Kommando ist die
-  Schnittstelle, `grover` normalisiert und prüft nur die Antwort (Abschnitt 9 bleibt).
-
-```yaml
-ai:
-  branch_name: >-
-    ollama run llama3.1:8b --hidethinking
-    "kebab-case branch name, max 5 words, prefix ticket/: $GROVER_TICKET $GROVER_TITLE"
+```console
+$ grover new PROJ-123 --title "Login redirect loop" --slug-from-title
+$ git -C ~/work/tickets/PROJ-123/api branch --show-current
+ticket/PROJ-123-login-redirect-loop
 ```
 
-- Ein optionales Top-Level-Feld `ai` mit genau einem Kommando, ausgeführt über `sh -c`.
-  stdin ist `null` (sonst greift das Modell-CLI das Terminal ab), stdout wird gefangen,
-  stderr geht als Debug-Log nach stderr. Env: `GROVER_TICKET` (Slug), `GROVER_TITLE`.
-- Die Antwort *ist* der Branch-Name; es gibt kein `{title}`-Token in `branch_template`.
-  `plan::branch_slug` schickt jedes `/`-Segment durch `slug`, damit `ticket/PROJ-123-foo`
-  seinen Slash behält; Backticks, Anführungszeichen und Leerzeilen fallen weg.
-- Der Titel kommt aus `new --title <text>`. Fehlt er und `ai` ist gesetzt, fragt `new` auf
-  einem TTY danach (überspringbar). Ohne Titel läuft das Kommando trotzdem — es kann den
-  Titel selbst holen (`curl` gegen Jira), das ist seine Sache.
-- Deadline 20 s (`spawn` plus `try_wait`-Polling; die Frist ist Parameter der Hilfsfunktion,
-  damit ein Test 50 ms nutzen kann). Fehler, Frist oder leere Antwort: Warnung und
-  `branch_template` wie bisher. 20 s decken 8B geladen ab; ein 31B-Modell lädt beim ersten
-  Aufruf länger und fällt dann auf den bisherigen Namen zurück. Bewusst kein Config-Feld
-  dafür, bis es wirklich stört.
-- `--dry-run` führt das Kommando nicht aus und sagt das; ein Prompt für den Branch-Namen
-  gibt es nicht (nicht reproduzierbar).
-- Tests: Antwort → Branch wie geliefert (normalisiert); Vorrede und Backticks fallen weg;
-  `ticket/PROJ-1-A` behält den Slash; Fehler und Frist → bisheriger Name mit Warnung; ohne
-  `ai`-Feld bleibt alles unverändert; `--dry-run` führt nichts aus.
+- `new --title <text>` nimmt den Titel eines Tickets entgegen, `--slug-from-title` schaltet
+  ihn für den Branch-Namen ein. Ohne Titel ist das Flag ein Fehler, nicht ein stiller
+  Fallback: wer es setzt, will den Titel.
+- Der Titel wird lokal in einen Slug übersetzt (`plan::title_slug`, kein Modell, keine
+  Abhängigkeit): nicht-alphanumerische Zeichen werden zu `-`, alles klein, Umlaute werden
+  transliteriert (`ä`→`ae`, `ö`→`oe`, `ü`→`ue`, `ß`→`ss`), Wörter wie `a`, `an`, `the`,
+  `of`, `to`, `for`, `and`, `in`, `on`, `with`, `der`, `die`, `das`, `und`, `von`, `im`,
+  `zu`, `mit` fallen weg, höchstens fünf Wörter bleiben, das Ergebnis wird auf 48 Zeichen
+  gekürzt. Bleibt nichts übrig (etwa `---`), warnt `grover` und nimmt den reinen
+  Ticket-Branch; `title_slug` gibt dafür `None` statt eines Fehlers zurück.
+- Der Branch ist `<Ticket-Slug>-<Titel-Slug>`, das Template bleibt die Form:
+  `branch_template.replace("{ticket}", "<slug>")`. Damit funktioniert es mit jedem
+  Template, auch `feat/{ticket}`.
+- Der Ticket-Ordner ändert sich nicht: er bleibt `work_dir/<Ticket-Slug>`. Der Titel ist
+  eine Eigenschaft des Branch-Namens, nicht des Ordners — sonst müsste `path`/`status`/
+  `rm` den Titel kennen.
+- Wirksam nur mit `create_branch: true`. Bei `false` warnt `grover` („title slug ignored,
+  create_branch is off“), weil ohne Branch niemand den Namen sieht.
+- `--dry-run` zeigt den fertigen Branch-Namen in der Fortschrittszeile, führt aber nichts
+  aus. Ein Prompt für den Titel gibt es nicht: er ist optional und ohne `--slug-from-title`
+  wirkungslos.
+- Tests: Titel → `ticket/PROJ-123-login-redirect-loop`; Füllwörter, Satzzeichen und
+  Mehrfach-Leerzeichen fallen weg; mehr als fünf Wörter werden gekürzt; Umlaute werden
+  transliteriert statt verworfen; ein Titel ohne Buchstaben oder Ziffern ergibt `None`;
+  `--title` ohne `--slug-from-title` ändert den Branch nicht; `--slug-from-title` ohne
+  `--title` ist ein Clap-Fehler (Exit 2); mit `create_branch: false` kommt eine Warnung und
+  der Branch bleibt beim Template.
 
 ### 12.9 Kleinkram (Backlog, erst mit Bedarf)
 
