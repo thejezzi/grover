@@ -194,8 +194,32 @@ join the same name space as `repos` and `repo_dirs`; a local repository wins ove
 one with the same name, and duplicates collapse.
 
 Discovery needs `clone_dir`, otherwise the printed URLs have nowhere to be cloned to and are
-ignored. The commands run on every `new` and on the repository prompt, so keep them fast;
-there is no cache and no deadline yet.
+ignored. The commands run once per `new`, and only when repositories are actually needed, so
+keep them fast; there is no cache and no deadline yet.
+
+With `gh`, `--limit` is the trap: the flag caps the list silently, without a warning, so a
+limit below your repository count hides repositories with no error message. `--limit 4000` is
+`gh`'s own maximum and a safe default.
+
+```yaml
+discover:
+  - "gh repo list my-org --limit 4000 --json sshUrl -q '.[].sshUrl'"
+```
+
+`gh repo list` also lists forks and archived repositories unless you filter them:
+`--source` keeps only non-forks and `--no-archived` drops archived ones. On the account used
+for testing, 105 repositories became 60 with both flags, so the difference is real and every
+one of them would show up in the picker.
+
+```yaml
+discover:
+  - "gh repo list my-org --limit 4000 --source --no-archived \
+      --json sshUrl -q '.[].sshUrl'"
+```
+
+The repositories of others are always public; your own list includes private ones. Every
+entry becomes a repository `grover` can clone, so `--all` would clone the whole list into
+`clone_dir` and add a worktree per repository — select by name instead.
 
 ### copy
 

@@ -1,8 +1,9 @@
 # PLAN — grover
 
 Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, dazu Branch opt-in, `clone_dir` opt-in,
-`discover` und der eigene Listen-Prompt; `make check` grün (125 Tests). Abschnitt 12 ist die
-priorisierte Liste der nächsten Features; 12.8 bekommt vor dem Code ein Go.
+`discover` und der eigene Listen-Prompt; mit `gh` durchgespielt, `make check` grün
+(126 Tests). Abschnitt 12 ist die priorisierte Liste der nächsten Features; 12.8 bekommt vor
+dem Code sein Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -142,7 +143,8 @@ repos:                               # Repos, die bei Bedarf geklont werden
     name: api                        # optional, sonst aus der URL abgeleitet
 
 discover:                            # Kommandos, die Clone-URLs ausgeben (eine je Zeile)
-  - "gh repo list my-org --json sshUrl -q '.[].sshUrl'"
+  - "gh repo list my-org --limit 4000 --source --no-archived \
+     --json sshUrl -q '.[].sshUrl'"
 
 copy:                                # Dateien in den Ticket-Ordner
   - from: "~/templates/AGENTS.md"

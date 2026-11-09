@@ -108,14 +108,20 @@ instead of choosing. Type more of the name. `--all` sidesteps matching entirely.
 
 ```text
 no repo selected: pass `--repo <name>` or `--all`
-no repos found: check `repo_dirs` and `repos`
+no repos found: check `repo_dirs`, `repos` and `discover`
 ```
 
 The first means no repository was selected and stdin is not a terminal. The second means the
 selection machinery found no repositories at all: the configured folders contain no children
-with a `.git` entry, or `repos` is empty. A `repo_dirs` folder that does not exist produces a
-warning; if you see no warning and still no repositories, the folder is there but none of its
-children is a git repository.
+with a `.git` entry, `repos` is empty, and no `discover` command printed a usable URL. A
+`repo_dirs` folder that does not exist produces a warning; if you see no warning and still no
+repositories, the folder is there but none of its children is a git repository.
+
+A `discover` command that fails is only a warning, so this error is also what you see when
+the only source was a `discover` entry and it failed: `gh` not installed, not logged in, or
+the org name wrong. The warning above the error carries the command's own stderr. A
+`discover` that printed URLs but no repositories at all means `clone_dir` is missing — the
+warning then says `repos`/`discover` are ignored.
 
 ## A base ref does not exist
 

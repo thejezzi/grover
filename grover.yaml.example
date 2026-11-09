@@ -33,8 +33,11 @@ repos:
 
 # Commands that print clone URLs, one per line. Any CLI works: `gh`, `bb`, `glab`,
 # or your own script. `# ` starts a comment. Needs `clone_dir`.
+# `--limit` caps the list silently: a too small value hides repos without an error,
+# and both flags below keep forks and archived repos out of the picker.
 discover:
-  - "gh repo list my-org --limit 200 --json sshUrl -q '.[].sshUrl'"
+  - "gh repo list my-org --limit 4000 --source --no-archived \
+     --json sshUrl -q '.[].sshUrl'"
 
 # Files copied into the ticket directory; `to` is relative to that directory.
 copy:

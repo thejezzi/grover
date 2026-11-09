@@ -34,6 +34,7 @@ pub fn discover(config: &Config) -> Vec<Repo> {
         if !config.repos.is_empty() || !config.discover.is_empty() {
             tracing::warn!("`repos`/`discover` ignored: set `clone_dir` to clone them");
         }
+        repos.sort_by(|a, b| a.name.cmp(&b.name));
         return repos;
     };
     for (url, declared) in remote_entries(config) {
@@ -238,5 +239,24 @@ mod tests {
         .expect("config");
         let config = Config::load(Some(&path)).expect("config");
         assert!(discover(&config).is_empty());
+    }
+
+    #[test]
+    fn local_repos_stay_sorted_without_clone_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let code = tmp.path().join("code");
+        for name in ["zeta", "alpha"] {
+            let repo = code.join(name);
+            fs::create_dir_all(repo.join(".git")).expect("repo");
+        }
+        let path = tmp.path().join("grover.yaml");
+        fs::write(
+            &path,
+            "work_dir: tickets\nrepo_dirs: [code]\ndiscover:\n  - \"echo git@github.com:o/a.git\"\n",
+        )
+        .expect("config");
+        let config = Config::load(Some(&path)).expect("config");
+        let names: Vec<String> = discover(&config).into_iter().map(|repo| repo.name).collect();
+        assert_eq!(names, ["alpha", "zeta"], "sorted, like the with-remotes path");
     }
 }

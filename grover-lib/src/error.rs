@@ -25,7 +25,7 @@ pub enum Error {
     ConfigWrite(#[source] serde_yaml_ng::Error),
     #[error("no repo selected: pass `--repo <name>` or `--all`")]
     NoSelection,
-    #[error("no repos found: check `repo_dirs` and `repos`")]
+    #[error("no repos found: check `repo_dirs`, `repos` and `discover`")]
     NoRepos,
     #[error("unknown name \"{query}\"; similar: {suggestions}")]
     UnknownName { query: String, suggestions: String },
