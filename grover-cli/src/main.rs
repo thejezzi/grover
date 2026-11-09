@@ -110,7 +110,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::New { ticket, repo, all, title, dry_run } => {
             let config = Config::load(config_path)?;
-            let (ticket, repos) = new_inputs(&config, ticket, repo, all)?;
+            let (ticket, repos, title) = new_inputs(&config, ticket, repo, all, title)?;
             let request = Request { ticket, repos, all, title };
             let plan = Plan::build(&config, &request)?;
             let report = plan.apply(dry_run)?;
@@ -158,18 +158,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ticket and repos: the arguments, else a prompt on a terminal, else the old error.
+/// Ticket, repos and title: the arguments, else a prompt on a terminal, else the old error.
 fn new_inputs(
     config: &Config,
     ticket: Option<String>,
     repos: Vec<String>,
     all: bool,
-) -> anyhow::Result<(String, Vec<String>)> {
+    title: Option<String>,
+) -> anyhow::Result<(String, Vec<String>, Option<String>)> {
     if tui::available() {
-        return tui::complete(&mut tui::Tui, config, ticket, repos, all);
+        return tui::complete(&mut tui::Tui, config, ticket, repos, all, title);
     }
     let ticket = ticket.ok_or_else(|| anyhow!("missing ticket: pass <ticket>"))?;
-    Ok((ticket, repos))
+    Ok((ticket, repos, title))
 }
 
 /// Ticket for `rm`: the argument, else a pick on a terminal; never guessed from the cwd.

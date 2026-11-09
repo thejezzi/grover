@@ -192,6 +192,9 @@ $ grover new PROJ-123 -r api \
 ```
 
 The ticket name is the one from your issue tracker; it does not have to be filesystem-safe.
+When `new` runs without arguments on a terminal, it asks for the ticket and then, if
+`create_branch: true`, for an optional title — Enter without typing means no title, and a
+`--title` argument skips the question.
 Spaces and slashes become `-` in the slug, which is then used for both the folder and the
 branch. See [Tickets and slugs](concepts.md#tickets-and-slugs) for the exact rule.
 

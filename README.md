@@ -104,7 +104,9 @@ starts a search, so typing a letter does not filter by accident.
 By default the worktrees are detached at the base commit: no branch per repository, nothing
 to push or clean up. Set `create_branch: true` (or
 `grover config --set create_branch=true`) when you want grover to create the ticket branch
-in every worktree.
+in every worktree. With branches on, the wizard also asks for an optional ticket title, and
+`--title "Login redirect loop"` turns `ticket/PROJ-123` into
+`ticket/PROJ-123-login-redirect-loop`.
 
 ## The commands
 

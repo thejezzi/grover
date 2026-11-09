@@ -382,6 +382,7 @@ Menü mit allen Top-Level-Feldern und ihrem aktuellen Wert:
 ```text
 $ grover new
 ? Ticket  PROJ-123
+? Title (empty = none)  Login redirect loop
 ? Repos (Leertaste = wählen)
 ❯ [✓] api   local
   [ ] web   remote (wird geklont)
@@ -389,10 +390,12 @@ $ grover new
 
 - `<ticket>` wird optional. Fehlt es und stdin ist ein TTY, kommt ein `Input` mit derselben
   Prüfung wie danach im Slug (nicht leer, ergibt einen Ordnernamen).
+- Der Titel-Prompt kommt nur mit `create_branch: true`, weil der Slug ohne Branch nirgends
+  landet; Enter ohne Eingabe heißt „kein Titel“. Ein `--title`-Argument überspringt ihn.
 - Fehlen `--repo` und `--all`, kommt eine Mehrfachauswahl über die gefundenen Repos, in
   Discovery-Reihenfolge (alphabetisch), remote gekennzeichnet. `j`/`k` bewegen, `/` sucht,
   `Space` wählt, `l`/`h` alles/keine (Entscheidung 10).
-- `--repo`, `--all` und ein Ticket-Argument überspringen jeweils nur ihren Prompt.
+- `--repo`, `--all`, `--title` und ein Ticket-Argument überspringen jeweils nur ihren Prompt.
 - Leere Mehrfachauswahl: Warnung und nochmal fragen. Abbruch: Exit 1, nichts geschrieben.
 - Danach unverändert: Plan bauen, `apply`, Pfad auf stdout.
 
@@ -615,7 +618,8 @@ ticket/PROJ-123-login-redirect-loop
 
 - `new --title <text>` nimmt den Titel eines Tickets entgegen; ein Slug davon wird direkt an
   den Ticket-Slug gehängt. Ohne `--title` bleibt der Branch beim Template, ein zweites Flag
-  gibt es nicht.
+  gibt es nicht. Im interaktiven `new` kommt der Titel-Prompt nur mit
+  `create_branch: true`; Enter ohne Eingabe heißt „kein Titel“.
 - Der Titel wird lokal in einen Slug übersetzt (`plan::title_slug`, kein Modell, keine
   Abhängigkeit): nicht-alphanumerische Zeichen werden zu `-`, alles klein, Umlaute werden
   transliteriert (`ä`→`ae`, `ö`→`oe`, `ü`→`ue`, `ß`→`ss`), Wörter wie `a`, `an`, `the`,

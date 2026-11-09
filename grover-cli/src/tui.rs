@@ -454,20 +454,33 @@ pub fn complete(
     ticket: Option<String>,
     repos: Vec<String>,
     all: bool,
-) -> anyhow::Result<(String, Vec<String>)> {
+    title: Option<String>,
+) -> anyhow::Result<(String, Vec<String>, Option<String>)> {
     let ticket = match ticket {
         Some(ticket) => ticket,
         None => ask_ticket(prompter)?,
     };
+    // Only worth asking when a branch will carry the title.
+    let title = match title {
+        Some(title) => Some(title),
+        None if config.create_branch => ask_title(prompter)?,
+        None => None,
+    };
     if all || !repos.is_empty() {
-        return Ok((ticket, repos));
+        return Ok((ticket, repos, title));
     }
-    Ok((ticket, ask_repos(prompter, config)?))
+    Ok((ticket, ask_repos(prompter, config)?, title))
 }
 
 /// Ticket for `new`; the slug check happens later in `Plan::build`.
 fn ask_ticket(prompter: &mut dyn Prompter) -> anyhow::Result<String> {
     prompter.input("Ticket", "", INPUT_HELP)?.ok_or_else(abort)
+}
+
+/// Optional title for the branch name; empty means none.
+fn ask_title(prompter: &mut dyn Prompter) -> anyhow::Result<Option<String>> {
+    let answer = prompter.input("Title (empty = none)", "", INPUT_HELP)?.ok_or_else(abort)?;
+    Ok((!answer.trim().is_empty()).then(|| answer.trim().to_string()))
 }
 
 /// Ticket for `rm`: pick from the existing ones, never a guess.
@@ -1509,10 +1522,11 @@ mod tests {
         let config = remote_config(&path);
         let mut script = Script::new(vec![]);
         let given = (Some("PROJ-1".to_string()), vec!["api".to_string()]);
-        let (ticket, repos) =
-            complete(&mut script, &config, given.0, given.1, false).expect("complete");
+        let (ticket, repos, title) =
+            complete(&mut script, &config, given.0, given.1, false, None).expect("complete");
         assert_eq!(ticket, "PROJ-1");
         assert_eq!(repos, ["api"]);
+        assert_eq!(title, None);
         assert!(script.prompts.is_empty());
     }
 
@@ -1521,11 +1535,44 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("remotes.yaml");
         let mut script = Script::new(vec![Answer::Input("PROJ-2".into())]);
-        let (ticket, repos) =
-            complete(&mut script, &remote_config(&path), None, vec![], true).expect("complete");
+        let (ticket, repos, _) =
+            complete(&mut script, &remote_config(&path), None, vec![], true, None)
+                .expect("complete");
         assert_eq!(ticket, "PROJ-2");
         assert!(repos.is_empty());
         assert_eq!(script.prompts, ["Ticket"]);
+    }
+
+    #[test]
+    fn a_title_is_asked_only_when_branches_are_created() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("remotes.yaml");
+        let mut branchy = remote_config(&path);
+        branchy.create_branch = true;
+        let mut script =
+            Script::new(vec![Answer::Input("PROJ-3".into()), Answer::Input("Dark mode".into())]);
+        let (_, _, title) =
+            complete(&mut script, &branchy, None, vec![], true, None).expect("complete");
+        assert_eq!(title.as_deref(), Some("Dark mode"));
+        assert_eq!(script.prompts, ["Ticket", "Title (empty = none)"]);
+
+        // Without branches the title has no effect, so the prompt stays away.
+        let mut plain = remote_config(&path);
+        plain.create_branch = false;
+        let mut script = Script::new(vec![Answer::Input("PROJ-4".into())]);
+        let (_, _, title) =
+            complete(&mut script, &plain, None, vec![], true, None).expect("complete");
+        assert_eq!(title, None);
+        assert_eq!(script.prompts, ["Ticket"]);
+    }
+
+    #[test]
+    fn an_empty_title_answer_means_no_title() {
+        let mut script = Script::new(vec![Answer::Input(String::new())]);
+        assert_eq!(ask_title(&mut script).expect("title"), None);
+
+        let mut given = Script::new(vec![Answer::Input("  Login  ".into())]);
+        assert_eq!(ask_title(&mut given).expect("title").as_deref(), Some("Login"));
     }
 
     #[test]
