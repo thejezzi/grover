@@ -40,25 +40,30 @@ The easiest way to create the file is the wizard:
 
 ```console
 $ grover config --init
-? work_dir  /home/you/work/tickets
-? branch_template  ticket/{ticket}
-? base  HEAD
+? [1/9] work_dir  /home/you/work/tickets
+? [2/9] branch_template  ticket/{ticket}
+? [3/9] base  HEAD
 ...
 ```
 
 The wizard asks for one value at a time, in this order: `work_dir`,
-`branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy` and
-`setup`. `work_dir` is the only value without a default: it is the folder
-where ticket folders will be created, for example `/home/you/work/tickets`.
-The other questions show their defaults in grey and accept them with Enter;
-typing replaces them. Esc goes back one field and keeps your answer. In the
-path questions Tab completes what you typed, so `~/wo` + Tab becomes
-`~/work`.
-The four lists (`repo_dirs`, `repos`, `copy`, `setup`) are menus: choose
-`+ add` to append a value, then leave through the back entry. `setup` commands
-run in order after each new worktree. Their output goes to stderr, so stdout
-stays the ticket path. The last question is `write <path>?`; nothing is written
-before it, so declining leaves no half-finished file behind.
+`branch_template`, `base`, `create_branch`, `repo_dirs`, `repos`, `discover`,
+`copy` and `setup`. `work_dir` is the only value without a default: it is the
+folder where ticket folders will be created, for example
+`/home/you/work/tickets`. The other questions show their defaults in grey and
+accept them with Enter; typing replaces them. Esc goes back one field and keeps
+your answer. In the path questions Tab completes what you typed, so `~/wo` +
+Tab becomes `~/work`.
+The five lists (`repo_dirs`, `repos`, `discover`, `copy`, `setup`) are menus:
+`j`/`k` move, `/` searches, `+ add` appends a value, and the back entry leaves
+the list. `setup` commands run in order after each new worktree. Their output
+goes to stderr, so stdout stays the ticket path. The last question is
+`write <path>?`; nothing is written before it, so declining leaves no
+half-finished file behind.
+
+`clone_dir` is not part of the wizard. Leave it empty and `grover` uses local
+repositories only; set it in the editor or with
+`grover config --set clone_dir=~/repos` when you also want clones.
 
 If you prefer to write the file yourself, put this in `~/.config/grover/config.yaml` (or in
 `./grover.yaml` next to your work):
@@ -107,9 +112,9 @@ with `--all`.
    An unknown or ambiguous name stops the run here, before anything is written.
 3. It creates the ticket folder, `work_dir/PROJ-123` in this example.
 4. For each selected repository it adds a worktree — a second checkout of that repository,
-   with its own files — at `<ticket folder>/<repo name>`, on a new branch named after
-   `branch_template`. The default template is `ticket/{ticket}`, so the branch is
-   `ticket/PROJ-123`.
+   with its own files — at `<ticket folder>/<repo name>`. With `create_branch: true` that
+   worktree is on a new branch named after `branch_template` (`ticket/PROJ-123` with the
+   default). Without it, the worktree is detached at the base commit.
 5. It runs the configured `setup` commands in each new worktree.
 6. It copies the files from the `copy` list into the ticket folder.
 
@@ -118,7 +123,7 @@ The result looks like this:
 ```text
 ~/work/tickets/PROJ-123
 ├── AGENTS.md          # copied from ~/templates/AGENTS.md
-└── api/               # worktree, on branch ticket/PROJ-123
+└── api/               # worktree at the base commit (or on ticket/PROJ-123)
 ```
 
 The ticket folder is the only thing on stdout, the data channel. Everything about the run —

@@ -33,7 +33,7 @@ impl Fixture {
         fs::write(
             &config,
             format!(
-                "work_dir: \"{}\"\nrepo_dirs:\n  - \"{}\"\n\
+                "work_dir: \"{}\"\ncreate_branch: true\nrepo_dirs:\n  - \"{}\"\n\
                  copy:\n  - from: \"{}\"\n    to: AGENTS.md\n",
                 root.path().join("tickets").display(),
                 root.path().join("code").display(),
@@ -63,7 +63,7 @@ fn config_with(root: &Path, extra: &str) -> Config {
     fs::write(
         &path,
         format!(
-            "work_dir: \"{}\"\nrepo_dirs: [\"{}\"]\ncopy:\n  - from: \"{}\"\n{extra}",
+            "work_dir: \"{}\"\ncreate_branch: true\nrepo_dirs: [\"{}\"]\ncopy:\n  - from: \"{}\"\n{extra}",
             root.join("tickets").display(),
             root.join("code").display(),
             root.join("templates/AGENTS.md").display()
@@ -142,7 +142,7 @@ fn remote_repo_is_cloned_and_checked_out() {
     fs::write(
         &config,
         format!(
-            "work_dir: \"{}\"\nclone_dir: \"{}\"\nrepos:\n  - url: \"{}\"\n",
+            "work_dir: \"{}\"\ncreate_branch: true\nclone_dir: \"{}\"\nrepos:\n  - url: \"{}\"\n",
             fixture.tickets().display(),
             clone_dir.display(),
             origin.display()
@@ -188,6 +188,45 @@ fn base_refs_fall_back_left_to_right() {
     plan.apply(false).expect("apply");
 
     assert_eq!(git(&plan.ticket_dir.join("api"), &["rev-parse", "HEAD"]), first);
+}
+
+#[test]
+fn without_create_branch_the_worktree_is_detached() {
+    let fixture = Fixture::new();
+    let path = fixture.root.path().join("detached.yaml");
+    fs::write(
+        &path,
+        format!(
+            "work_dir: \"{}\"\nrepo_dirs: [\"{}\"]\n",
+            fixture.tickets().display(),
+            fixture.root.path().join("code").display()
+        ),
+    )
+    .expect("config");
+    let config = Config::load(Some(&path)).expect("config");
+    let plan = Plan::build(&config, &request("PROJ-9", &["api"])).expect("plan");
+    plan.apply(false).expect("apply");
+
+    let worktree = plan.ticket_dir.join("api");
+    assert_eq!(
+        git(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "HEAD",
+        "detached, no ticket branch"
+    );
+    let branches = git(&fixture.root.path().join("code/api"), &["branch", "--list"]);
+    assert!(!branches.contains("ticket/PROJ-9"), "{branches}");
+}
+
+#[test]
+fn create_branch_true_keeps_the_old_behaviour() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan(request("PROJ-10", &["api"]));
+    plan.apply(false).expect("apply");
+    assert!(plan.create_branch);
+    assert_eq!(
+        git(&plan.ticket_dir.join("api"), &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "ticket/PROJ-10"
+    );
 }
 
 #[test]

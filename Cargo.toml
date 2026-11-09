@@ -14,6 +14,7 @@ grover-lib = { path = "grover-lib" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
+crossterm = "0.29"
 inquire = { version = "0.9", default-features = false, features = ["crossterm", "fuzzy"] }
 dirs = "7"
 serde = { version = "1", features = ["derive"] }

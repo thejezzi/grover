@@ -42,7 +42,13 @@ and also for a worktree. The repository name is its folder name, so `~/code/api`
 Remote repositories come from the `repos` list in the config. Each entry has a URL and an
 optional name; without a name, the name is derived from the end of the URL, so
 `git@github.com:org/api.git` is called `api`. A remote repository is cloned into
-`clone_dir` (default `~/.grover/repos`) the first time a ticket needs it, not before.
+`clone_dir` the first time a ticket needs it, not before.
+
+Instead of listing URLs by hand, `discover` asks a git host for them: each command prints
+one clone URL per line, and the results join the same name space as `repos`. `gh repo list`
+for GitHub, `bb repo list` for Bitbucket, or any script that knows your repositories. Both
+`repos` and `discover` need `clone_dir`; without it they are ignored and only local
+repositories are used.
 
 Names must be unique within a run. If a local repository and a remote entry share a name,
 the local one wins, because local repositories are collected first. Two local repositories
@@ -60,21 +66,23 @@ the one in `repo_dirs`, stays where it is; `grover` adds one worktree per reposi
 the ticket folder, at `<ticket folder>/<repository name>`.
 
 A branch is git's name for a line of commits, and checking one out is what puts files into
-a working directory. Each worktree gets a branch. Its name comes from `branch_template`,
-where `{ticket}` is replaced by the slug. With the default template `ticket/{ticket}`,
-ticket `PROJ-123` uses the branch `ticket/PROJ-123`. Because the branch belongs to the
-repository and not to the worktree, it is visible from the original checkout too:
-`git branch` lists it, and `git worktree list` shows which folder has it checked out.
+a working directory. Whether the worktrees get a branch is your choice, through
+`create_branch`.
 
-If the branch already exists, `grover` reuses it instead of creating a new one. That is what
-makes a second `grover new PROJ-123 -r web` add the missing `web` worktree to an existing
-ticket without touching the branch that `api` is already using. Git itself refuses to check
-out the same branch in two worktrees at once, and `grover` passes that error through rather
-than working around it.
+With `create_branch: true`, each worktree gets a branch named like `branch_template`
+(`ticket/{ticket}` by default, so ticket `PROJ-123` uses `ticket/PROJ-123`). Because the
+branch belongs to the repository and not to the worktree, it is visible from the original
+checkout too: `git branch` lists it, and `git worktree list` shows which folder has it
+checked out. If the branch already exists, `grover` reuses it instead of creating a new one;
+that is what makes a second `grover new PROJ-123 -r web` add the missing `web` worktree
+without touching the branch `api` is using. Git refuses to check out the same branch in two
+worktrees, and `grover` passes that error through rather than working around it.
 
-Commits made inside a ticket worktree stay on the ticket branch in the shared repository.
-`grover` does not commit them, push them or merge them; that is your job or your agent's
-job, with ordinary git commands.
+With the default `create_branch: false`, the worktrees are *detached* at the base commit:
+you get the files without a branch per repository. Nothing to push, no branch to clean up in
+repositories you ended up not changing, and `grover status` shows `HEAD` instead of a branch
+name. Pushing from there needs an explicit `git switch -c <name>` first, which is exactly the
+point of the opt-in.
 
 ## Branches and base refs
 

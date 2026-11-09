@@ -62,10 +62,13 @@ Enter confirms and Esc goes back; the default value, when there is one, is shown
 is used when you press Enter without typing. Path prompts (`work_dir`, `repo_dirs`,
 `clone_dir`, `copy.from`) complete with Tab: the entries of the typed folder are listed as
 you type, `↑`/`↓` pick one, and Tab completes to the longest common prefix when none is
-picked. A typed `~` stays a `~` in the suggestions. In a single selection, typing filters the
-entries, the up and down arrows move, Enter confirms and Esc goes back. In a multi-selection,
-typing filters too, Space toggles the entry under the cursor, the right arrow selects all
-entries, the left arrow selects none, and Enter confirms the selection.
+picked. A typed `~` stays a `~` in the suggestions.
+
+Selection prompts have two modes. Normally `j`/`k` (or `↑`/`↓`) move, `g`/`G` jump to the
+first and last entry, and letters do nothing else. Press `/` to search: what you type filters
+the list as a case-insensitive substring, Enter keeps the filter and returns to moving around,
+Esc clears it. In a multi-selection, Space toggles the entry under the cursor, `l` selects all
+entries and `h` selects none; Enter confirms the selection.
 
 Esc means "one step back": in the config editor it returns from a field to the menu and from
 the menu to the shell, in the `--init` wizard it returns to the previous field and keeps the
@@ -360,10 +363,11 @@ form and the defaults filled in. It is the mode for scripts and for answering "w
 it prompts on a terminal; an empty value clears `clone_dir`. List fields remain in the
 editor. The config file must already exist.
 
-`--init` is the wizard: it numbers its steps (`[2/8] branch_template`), asks for `work_dir`
+`--init` is the wizard: it numbers its steps (`[2/9] branch_template`), asks for `work_dir`
 first and keeps asking until a non-empty answer arrives, then for `branch_template`, `base`,
-`repo_dirs` (a list), `clone_dir`, and the `repos`, `copy` and `setup` lists. Existing values
-are shown as grey defaults: Enter keeps them, typing replaces them. Esc in a field goes back
+`create_branch`, `repo_dirs` (a list), and the `repos`, `discover`, `copy` and `setup` lists.
+`clone_dir` is not asked; it stays empty until you set it. Existing values are shown as grey
+defaults: Enter keeps them, typing replaces them. Esc in a field goes back
 to the previous field and keeps what you typed; Esc in the first field aborts. The target is
 `--config` when given, else an existing config, else the `dirs` config path, which is
 `$XDG_CONFIG_HOME/grover/config.yaml` on Linux. An existing file is refused unless `--force`

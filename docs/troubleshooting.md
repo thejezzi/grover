@@ -36,8 +36,8 @@ A file that exists but does not parse produces the path and the parser's explana
 
 ```text
 /home/you/.config/grover/config.yaml: unknown field `repo_dir`, expected one of
-`work_dir`, `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`,
-`copy`, `setup`
+`work_dir`, `branch_template`, `create_branch`, `base`, `repo_dirs`, `clone_dir`,
+`repos`, `discover`, `copy`, `setup`
 at line 2 column 1
 ```
 
@@ -48,9 +48,9 @@ not next to `repos`.
 
 A file that parses but does not make sense fails with `invalid config: ...` followed by the
 reason. The common ones are a `branch_template` without `{ticket}`, a `base` with no ref, a
-`work_dir` that is empty, a config with neither `repo_dirs` nor `repos`, a `copy` entry with
-an empty `from`, and a `copy` entry whose `to` is absolute. Fix the named field; nothing has
-been written.
+`work_dir` that is empty, a config with neither `repo_dirs`, `repos` nor `discover`, a `copy`
+entry with an empty `from`, and a `copy` entry whose `to` is absolute. Fix the named field;
+nothing has been written.
 
 ## A command wants a terminal
 

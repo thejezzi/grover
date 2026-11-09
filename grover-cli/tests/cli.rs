@@ -46,7 +46,7 @@ fn fixture() -> (TempDir, String) {
     let path = root.path().join("grover.yaml");
     let work_dir = root.path().canonicalize().expect("root").join("tickets");
     let yaml = format!(
-        "work_dir: \"{}\"\nrepo_dirs: [\"{}\"]\n",
+        "work_dir: \"{}\"\ncreate_branch: true\nrepo_dirs: [\"{}\"]\n",
         work_dir.display(),
         root.path().join("code").display()
     );

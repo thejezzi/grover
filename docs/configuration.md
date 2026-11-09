@@ -78,15 +78,17 @@ misspelled key inside a `repos` or `copy` entry.
 | --- | --- | --- | --- |
 | `work_dir` | path | — | yes |
 | `branch_template` | string | `ticket/{ticket}` | no |
+| `create_branch` | bool | `false` | no |
 | `base` | string of refs | `HEAD` | no |
 | `repo_dirs` | list of paths | empty | no |
-| `clone_dir` | path | `~/.grover/repos` | no |
+| `clone_dir` | path | empty | no |
 | `repos` | list of entries | empty | no |
+| `discover` | list of shell commands | empty | no |
 | `copy` | list of entries | empty | no |
 | `setup` | list of shell commands | empty | no |
 
-`work_dir` is the only field without a default, and it plus at least one of `repo_dirs` or
-`repos` must be present, or the config does not pass validation.
+`work_dir` is the only field without a default, and it plus at least one of `repo_dirs`,
+`repos` or `discover` must be present, or the config does not pass validation.
 
 ### work_dir
 
@@ -109,6 +111,18 @@ time because every ticket would otherwise share one branch name.
 
 The template can contain slashes, which git reads as branch name separators. It is a plain
 string replacement, not a template language: there is exactly one token and no conditionals.
+
+### create_branch
+
+Whether `grover new` creates the branch from `branch_template` in every worktree. The
+default is `false`: each worktree is detached at the base commit, so you get the files of the
+ticket but no branch per repository. That is the smaller footprint — nothing to push, nothing
+to delete later, and `rm` only removes the worktrees.
+
+Set it to `true` when you want one branch name across all repositories to push and open pull
+requests from. `grover config --set create_branch=true` turns it on without touching the
+file by hand. With `false`, `grover status` shows `HEAD` as the branch, because a detached
+worktree has none.
 
 ### base
 
@@ -134,13 +148,13 @@ machine. If two entries contain a repository with the same name, the earlier ent
 
 ### clone_dir
 
-The destination for clones of repositories from `repos`. If a selected remote repository is
-not present there yet, it is cloned into `clone_dir/<name>`. The default is
-`~/.grover/repos`, so the folders survive between runs and are reused by later tickets.
+The destination for clones of repositories from `repos` and `discover`. If a selected
+remote repository is not present there yet, it is cloned into `clone_dir/<name>`, so the
+folders survive between runs and are reused by later tickets.
 
-The directory is created on demand. If the config has `repos` entries and neither `clone_dir`
-nor a home directory is available, validation fails, because there would be nowhere to clone
-to.
+There is no default. Leave `clone_dir` out and `grover` works with local repositories only;
+`repos` and `discover` entries are then ignored with a warning, because there would be
+nowhere to clone to. Set it by hand or with `grover config --set clone_dir=~/repos`.
 
 ### repos
 
@@ -160,6 +174,28 @@ error. Local repositories always win over a remote entry with the same name.
 Cloning happens inside the run that first needs the repository. Because git is called with
 `GIT_TERMINAL_PROMPT=0`, a repository that asks for credentials fails with a git error
 instead of hanging on a password prompt.
+
+### discover
+
+Commands that print clone URLs, one per line, so a git host can tell `grover` which
+repositories you may clone. Everything after a `#` on a line is a comment; empty lines are
+skipped. Any tool works, as long as it prints URLs:
+
+```yaml
+discover:
+  - "gh repo list my-org --limit 200 --json sshUrl -q '.[].sshUrl'"
+  - "bb repo list --mine --format '%(links.clone[?name==ssh].href)'"
+```
+
+Each command runs through `sh -c` during repository discovery, with
+`GIT_TERMINAL_PROMPT=0` so a missing credential fails instead of prompting. A command that
+exits non-zero is a warning, not an error: the other sources are still used. The printed URLs
+join the same name space as `repos` and `repo_dirs`; a local repository wins over a discovered
+one with the same name, and duplicates collapse.
+
+Discovery needs `clone_dir`, otherwise the printed URLs have nowhere to be cloned to and are
+ignored. The commands run on every `new` and on the repository prompt, so keep them fast;
+there is no cache and no deadline yet.
 
 ### copy
 
@@ -208,7 +244,10 @@ work_dir: "~/work/tickets"
 # Branch name; `{ticket}` is replaced by the ticket slug.
 branch_template: "ticket/{ticket}"
 
-# First ref that exists in a repository is the base of a new branch.
+# Off: worktrees are detached at the base; on: the branch above is created too.
+create_branch: false
+
+# First ref that exists in a repository is the base.
 base: "main|master|HEAD"
 
 # Local repositories: direct children of these folders.
@@ -216,7 +255,7 @@ repo_dirs:
   - "~/code"
   - "~/work/vendored"
 
-# Where clones from `repos` land; this is the default.
+# Where clones land. Optional; without it only local repositories are used.
 clone_dir: "~/.grover/repos"
 
 # Remote repositories, cloned on first use.
@@ -224,6 +263,10 @@ repos:
   - url: "git@github.com:org/api.git"
     name: api
   - url: "https://github.com/org/web.git"
+
+# Ask a git host which repositories you may clone.
+discover:
+  - "gh repo list my-org --limit 200 --json sshUrl -q '.[].sshUrl'"
 
 # Files copied into the ticket folder.
 copy:
@@ -258,9 +301,11 @@ is a menu, and it looks like this:
 ❯ work_dir          /home/you/work/tickets  Required; ticket folder parent.
   branch_template   ticket/{ticket}          Branch pattern, e.g. ticket/{ticket}.
   base              main|master|HEAD         Fallback refs in order.
+  create_branch     false                    true: create the branch in each worktree.
   repo_dirs         2 entries                Search direct child folders for local repos.
-  clone_dir         /home/you/.grover/repos  Remote clone folder; empty clears it.
+  clone_dir                                     Clone folder for remotes; empty means none.
   repos             0 entries                Remote repos are cloned when selected.
+  discover          1 entry                  Commands printing clone URLs, one per line.
   copy              1 entry                  Copy files into each ticket folder.
   setup             0 entries                Run commands after each new worktree.
   ← exit
@@ -272,8 +317,8 @@ default, Enter keeps it, typing replaces it. Path fields (`work_dir`, `clone_dir
 with Tab against the file system, so you rarely type a full path. Esc in a field returns to
 the menu without changing anything, and Esc in the menu leaves the editor. Choosing a list
 opens a small submenu with the entries, an entry for adding one, and an entry for going back;
-picking an existing entry removes it. There is no in-place edit of a list entry, only add and
-remove.
+`j`/`k` move, `/` searches, and picking an existing entry removes it. There is no in-place
+edit of a list entry, only add and remove.
 
 The editor writes after every menu action, so leaving the menu is not a commit step. Before
 each write the new state is validated by writing it and reading it back; if anything is
@@ -291,10 +336,11 @@ changes.
 field in turn, including the `setup` command list, and writes the result only after a final
 `write <path>?` question. It never modifies an existing config unless you pass `--force`;
 with `--force` a loadable existing config pre-fills the defaults. Esc goes back one field and
-keeps what you typed. All path questions (`work_dir`, `repo_dirs`, `clone_dir`, `copy.from`)
-complete with Tab. Like the editor, it needs a terminal; without one it fails and names the
-file it would have written. A declined final question or an invalid value leaves no new file
-behind and keeps an existing one untouched.
+keeps what you typed. Path questions (`work_dir`, `repo_dirs`, `copy.from`) complete with
+Tab. `clone_dir` is not part of the wizard: it stays empty until you set it in the editor or
+with `--set clone_dir=<path>`. Like the editor, the wizard needs a terminal; without one it
+fails and names the file it would have written. A declined final question or an invalid value
+leaves no new file behind and keeps an existing one untouched.
 
 For one change there is `grover config --set <field>[=<value>]`, which edits a single scalar
 field and writes the file without opening the editor. Without `=<value>` it prompts on a

@@ -277,6 +277,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "crossterm",
  "dirs",
  "grover-lib",
  "inquire",

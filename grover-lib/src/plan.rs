@@ -24,6 +24,8 @@ pub struct Plan {
     pub ticket_dir: PathBuf,
     pub ticket: String,
     pub branch: String,
+    /// `false` leaves the worktrees detached at the base instead of creating `branch`.
+    pub create_branch: bool,
     pub base: String,
     pub setup: Vec<String>,
     pub worktrees: Vec<Worktree>,
@@ -73,6 +75,7 @@ impl Plan {
             ticket_dir,
             ticket: slug,
             branch,
+            create_branch: config.create_branch,
             base: config.base.clone(),
             setup: config.setup.clone(),
             worktrees,
@@ -128,13 +131,15 @@ impl Plan {
             return Ok(());
         }
         let path = worktree.path.display();
-        tracing::info!("worktree {} ({}) in {path}", worktree.repo.name, self.branch);
+        let branch = if self.create_branch { self.branch.as_str() } else { "detached" };
+        tracing::info!("worktree {} ({branch}) in {path}", worktree.repo.name);
         if dry_run {
             for command in &self.setup {
                 tracing::info!("would run setup in {path}: {command}");
             }
         } else {
-            git::worktree_add(&worktree.repo.path, &worktree.path, &self.branch, &self.base)?;
+            let branch = self.create_branch.then_some(self.branch.as_str());
+            git::worktree_add(&worktree.repo.path, &worktree.path, branch, &self.base)?;
             self.run_setup(worktree);
         }
         report.created.push(worktree.path.clone());

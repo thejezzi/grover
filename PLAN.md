@@ -1,7 +1,8 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, `make check` grün (111 Tests). Abschnitt 12
-ist die priorisierte Liste der nächsten Features; 12.8 bekommt vor dem Code ein Go.
+Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, dazu Branch opt-in, `clone_dir` opt-in,
+`discover` und der eigene Listen-Prompt; `make check` grün (125 Tests). Abschnitt 12 ist die
+priorisierte Liste der nächsten Features; 12.8 bekommt vor dem Code ein Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -35,8 +36,9 @@ $ cd "$(grover new PROJ-123 --repo api,web)"
    fragt die CLI nach.
 5. **`copy` kopiert ins Ticket-Root**, nicht in jedes Repo. Pro-Repo-Vorbereitung ist ein
    eigener Bedarf, siehe 12.4.
-6. **Klone nur bei Bedarf.** Repos aus `repos` werden erst geklont, wenn sie gewählt
-   werden; lokale Repos aus `repo_dirs` haben Vorrang.
+6. **Klone nur bei Bedarf.** Repos aus `repos` und aus `discover`-Kommandos werden erst
+   geklont, wenn sie gewählt werden; lokale Repos aus `repo_dirs` haben Vorrang. `clone_dir`
+   hat keinen Default: ohne das Feld gibt es keine Klone, nur lokale Repos.
 7. **Fuzzy mit Sicherheitsnetz.** Exakter Treffer gewinnt; ist der beste Treffer nicht
    eindeutig, bricht `grover` mit Kandidatenliste ab, statt zu raten. Kein Treffer →
    Fehler mit den drei ähnlichsten Namen.
@@ -46,18 +48,22 @@ $ cd "$(grover new PROJ-123 --repo api,web)"
    (`std::io::IsTerminal`, ohne Extra-Dependency). Ohne TTY bleibt der bisherige Fehler —
    kein Hänger in Agenten und Skripten. Prompts rendern nach stderr, stdout bleibt allein
    der Ticket-Pfad, `cd "$(grover new)"` funktioniert also weiter.
-10. **`inquire` als TUI-Bibliothek.** Inline-Prompts (`Text`, `Select`, `MultiSelect`) mit
-    einem gemeinsamen Theme; Listen sind durchsuchbar, indem man tippt (Fuzzy-Filter,
-    Seiten, `→` alle, `←` keine). Kein eigener `/`-Key: der wäre in `inquire` nur mit
-    einem handgebauten Widget auf `console` zu haben (verworfen, zu viel Terminal-Code).
-    Rendert auf stderr. Nur `grover-cli` kennt die Lib; `grover-lib` bleibt prompt-frei
-    (Schichttrennung). Keine Fullscreen-TUI, kein `ratatui`.
-11. **`config --init` fragt alles ab.** Kein `init`-Subcommand und keine eingebettete
+10. **`inquire` für Texteingaben, eigener Listen-Prompt.** `Text` und `Confirm` kommen aus
+    `inquire` (Theme, Defaults, Pfad-Completion). Listen baut `tui::pick` selbst auf
+    `crossterm`: `inquire`s Filter ist immer aktiv, `j`/`k` und `/` lassen sich damit nicht
+    trennen. Regeln: `j`/`k`/`↑`/`↓` bewegen, `g`/`G` springen, `/` startet die Suche
+    (Teilstring, Enter behält den Filter, Esc leert ihn), `Space` wählt, `l`/`h` alles/keine,
+    Enter bestätigt, Esc geht zurück, Ctrl-C bricht ab. Rendert auf stderr, keine
+    Fullscreen-TUI, kein `ratatui`. Nur `grover-cli` kennt Terminal-Code; `grover-lib`
+    bleibt prompt-frei.
+11. **`config --init` fragt das Nötige ab.** Kein `init`-Subcommand und keine eingebettete
     Vorlage: das Binary steht für sich und schreibt nur Werte, die du eingibst. Ein Wizard
-    fragt `work_dir` (Pflicht, kein Default), `branch_template`, `base`, `repo_dirs`,
-    `clone_dir`, `repos`, `copy` und `setup`. Enter behält den Default; leere Listen landen
-    nicht in der Datei. Geschrieben wird erst nach `Config::validate`; eine vorhandene Datei nur
-    mit `--force`. Feintuning macht danach `grover config`.
+    fragt `work_dir` (Pflicht, kein Default), `branch_template`, `base`, `create_branch`,
+    `repo_dirs`, `repos`, `discover`, `copy` und `setup`. `clone_dir` fragt er nicht:
+    ohne das Feld bleibt es bei lokalen Repos, Klone sind eine bewusste Entscheidung.
+    Enter behält den Default; leere Listen landen nicht in der Datei. Geschrieben wird erst
+    nach `Config::validate`; eine vorhandene Datei nur mit `--force`. Feintuning macht
+    danach `grover config`.
 12. **`config` schreibt sofort.** Jede Änderung geht direkt in die Datei; kein Dirty-State,
     kein Speichern-Schritt. Geschrieben wird über eine Temp-Datei plus `rename`, damit ein
     Absturz nie eine halbe Config hinterlässt. Preis: Kommentare gehen beim ersten Speichern
@@ -125,14 +131,18 @@ gibt, stehen mit ihrer Zielform in Abschnitt 12 (`ai` 12.8).
 ```yaml
 work_dir: "~/work/tickets"           # Pflicht: hier entstehen die Ticket-Ordner
 branch_template: "ticket/{ticket}"   # Pflicht-Token {ticket}, Default s. o.
+create_branch: false                 # opt-in: Branch je Worktree, sonst detached
 base: "main|master|HEAD"             # erster existierender Ref je Repo
 repo_dirs:                           # Ordner, deren Kind-Repos gefunden werden
   - "~/code"
-clone_dir: "~/.grover/repos"         # Ziel für Klone aus `repos`
+clone_dir: "~/repos"                 # Ziel für Klone; ohne das Feld keine Klone
 
 repos:                               # Repos, die bei Bedarf geklont werden
   - url: "git@github.com:org/api.git"
     name: api                        # optional, sonst aus der URL abgeleitet
+
+discover:                            # Kommandos, die Clone-URLs ausgeben (eine je Zeile)
+  - "gh repo list my-org --json sshUrl -q '.[].sshUrl'"
 
 copy:                                # Dateien in den Ticket-Ordner
   - from: "~/templates/AGENTS.md"
@@ -187,16 +197,18 @@ grover completions <bash|zsh|fish|...>
 
 1. Config laden und validieren (`branch_template` enthält `{ticket}`, `base` hat mindestens
    einen Ref, mindestens eine Repo-Quelle, URLs nicht leer).
-2. Repos sammeln: Kind-Ordner von `repo_dirs` mit `.git`, plus `repos` (Name aus
-   `name` oder URL-Ende, Pfad `clone_dir/<name>`). Doppelte Namen: lokaler Eintrag gewinnt.
+2. Repos sammeln: Kind-Ordner von `repo_dirs` mit `.git`, plus `repos` und die Ausgabe der
+   `discover`-Kommandos (Name aus `name` oder URL-Ende, Pfad `clone_dir/<name>`). Doppelte
+   Namen: lokaler Eintrag gewinnt. Ohne `clone_dir` bleiben `repos`/`discover` ungenutzt.
 3. Fehlende Angaben erfragen, nur wenn stdin ein TTY ist: Ticket und/oder Repo-Auswahl
    (Abschnitt 11.3). Ohne TTY: Fehler wie bisher.
 4. Ticket zu Slug normalisieren (nur `[A-Za-z0-9._-]`, keine führenden `-`/`.`), Branch
    aus `branch_template` — oder aus `ai.branch_name`, wenn konfiguriert (12.8); bei
    Fehlschlag bleibt es beim Template. Ticket-Ordner aus `work_dir` + Slug.
-5. Auswahl per Fuzzy auflösen; Plan bauen (`worktrees`, `copies`).
+5. Auswahl per Fuzzy auflösen; Plan bauen (`worktrees`, `copies`, `create_branch`).
 6. `apply`: Ticket-Ordner anlegen, pro Repo einen Worktree auf dem ersten dort
-   existierenden Ref aus `base` anlegen und Setup ausführen; danach Dateien kopieren.
+   existierenden Ref aus `base` anlegen — mit Branch nur bei `create_branch: true`, sonst
+   detached — und Setup ausführen; danach Dateien kopieren.
    Vorhandene Pfade werden übersprungen und nicht überschrieben.
    Alle Pfade sind vor dem git-Aufruf absolut: Ein relatives Ziel würde
    `git -C <repo> worktree add` im Repo anlegen, nicht im Projekt.
@@ -289,6 +301,8 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.6 `--set`, Feldhilfe in Editor und Wizard (92 Tests)
 - [x] 12.7 Esc als „zurück“, Defaults, Schritt-Zähler, Schlussfrage (100 Tests)
 - [x] 12.5 Pfad-Autovervollständigung per Tab (111 Tests)
+- [x] `create_branch` als Opt-in, `clone_dir` ohne Default, `discover`-Kommandos
+- [x] Eigener Listen-Prompt: `j`/`k` bewegen, Suche erst nach `/` (125 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -329,9 +343,11 @@ Menü mit allen Top-Level-Feldern und ihrem aktuellen Wert:
 ❯ work_dir          ~/work/tickets
   branch_template   ticket/{ticket}
   base              main|master|HEAD
+  create_branch     false
   repo_dirs         1 Eintrag
-  clone_dir         ~/.grover/repos
+  clone_dir         (leer)
   repos             2 Einträge
+  discover          1 Eintrag
   copy              1 Eintrag
   setup             1 Eintrag
   beenden
@@ -340,8 +356,9 @@ Menü mit allen Top-Level-Feldern und ihrem aktuellen Wert:
 - Eingabe je Feld über `Input`; leere Eingabe behält den alten Wert. Validiert wird durch
   Neuladen (`Config::load`): schlägt es fehl, wird die Datei auf den Stand davor
   zurückgeschrieben und der Fehler als Warnung gemeldet. Keine doppelte Logik.
-- Listen (`repo_dirs`, `repos`, `copy`, `setup`) laufen über einen gemeinsamen
-  Untermenü-Helfer: Einträge anzeigen, hinzufügen, entfernen.
+- Listen (`repo_dirs`, `repos`, `discover`, `copy`, `setup`) laufen über einen gemeinsamen
+  Untermenü-Helfer: Einträge anzeigen, hinzufügen, entfernen; Navigation mit `j`/`k`,
+  Suche erst nach `/` (Entscheidung 10).
   Eine Hilfsfunktion für vier Felder, kein Zustandsautomat für
   „bearbeiten“.
 - `repos` fragt `url` und `name` (leer = aus der URL), `copy` fragt `from` und
@@ -368,8 +385,9 @@ $ grover new
 
 - `<ticket>` wird optional. Fehlt es und stdin ist ein TTY, kommt ein `Input` mit derselben
   Prüfung wie danach im Slug (nicht leer, ergibt einen Ordnernamen).
-- Fehlen `--repo` und `--all`, kommt ein `MultiSelect` über die gefundenen Repos, in
-  Discovery-Reihenfolge (alphabetisch), remote gekennzeichnet.
+- Fehlen `--repo` und `--all`, kommt eine Mehrfachauswahl über die gefundenen Repos, in
+  Discovery-Reihenfolge (alphabetisch), remote gekennzeichnet. `j`/`k` bewegen, `/` sucht,
+  `Space` wählt, `l`/`h` alles/keine (Entscheidung 10).
 - `--repo`, `--all` und ein Ticket-Argument überspringen jeweils nur ihren Prompt.
 - Leere Mehrfachauswahl: Warnung und nochmal fragen. Abbruch: Exit 1, nichts geschrieben.
 - Danach unverändert: Plan bauen, `apply`, Pfad auf stdout.

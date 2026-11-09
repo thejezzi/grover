@@ -24,16 +24,26 @@ fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     succeeded(cmd)
 }
 
-/// Add a worktree; an existing branch is reused, else the first existing base ref.
-pub fn worktree_add(repo: &Path, dir: &Path, branch: &str, bases: &str) -> Result<()> {
+/// Add a worktree; `Some(branch)` creates or reuses it, `None` detaches at the base.
+pub fn worktree_add(repo: &Path, dir: &Path, branch: Option<&str>, bases: &str) -> Result<()> {
     let mut cmd = git(repo);
-    cmd.args(["worktree", "add"]);
-    if branch_exists(repo, branch)? {
-        cmd.arg(dir).arg(branch);
-    } else {
-        cmd.args(["-b", branch]).arg(dir).arg(first_existing(repo, bases)?);
-    }
-    run(cmd, format!("worktree add {branch} in {}", dir.display()))
+    cmd.arg("worktree").arg("add");
+    let what = match branch {
+        None => {
+            cmd.arg("--detach");
+            "detached".to_string()
+        }
+        Some(branch) if branch_exists(repo, branch)? => {
+            cmd.arg(dir).arg(branch);
+            return run(cmd, format!("worktree add {branch} in {}", dir.display()));
+        }
+        Some(branch) => {
+            cmd.args(["-b", branch]);
+            branch.to_string()
+        }
+    };
+    cmd.arg(dir).arg(first_existing(repo, bases)?);
+    run(cmd, format!("worktree add {what} in {}", dir.display()))
 }
 
 /// First ref of `main|master|HEAD` that resolves in this repo.

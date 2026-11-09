@@ -25,7 +25,7 @@ impl Fixture {
         fs::write(
             &config,
             format!(
-                "work_dir: \"{}\"\nrepo_dirs: [\"{}\"]\n",
+                "work_dir: \"{}\"\ncreate_branch: true\nrepo_dirs: [\"{}\"]\n",
                 root.path().join("tickets").display(),
                 root.path().join("code").display()
             ),

@@ -17,6 +17,9 @@ pub struct Config {
     /// Branch name; `{ticket}` is replaced by the slug.
     #[serde(default = "default_branch_template")]
     pub branch_template: String,
+    /// Create the ticket branch per worktree; off leaves a detached HEAD at the base.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub create_branch: bool,
     /// Base ref for new branches.
     #[serde(default = "default_base")]
     pub base: String,
@@ -29,6 +32,9 @@ pub struct Config {
     /// Repos cloned only when selected.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<RemoteRepo>,
+    /// Commands that print clone URLs, one per line; needs `clone_dir`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discover: Vec<String>,
     /// Files copied into the ticket directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy: Vec<CopySpec>,
@@ -72,9 +78,8 @@ fn default_base() -> String {
     "HEAD".to_string()
 }
 
-/// Where clones land when `clone_dir` is not set.
-fn default_clone_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".grover/repos"))
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Config {
@@ -83,10 +88,12 @@ impl Config {
         Config {
             work_dir,
             branch_template: default_branch_template(),
+            create_branch: false,
             base: default_base(),
             repo_dirs: Vec::new(),
-            clone_dir: default_clone_dir(),
+            clone_dir: None,
             repos: Vec::new(),
+            discover: Vec::new(),
             copy: Vec::new(),
             setup: Vec::new(),
         }
@@ -166,10 +173,7 @@ impl Config {
         self.work_dir = expand(&self.work_dir, base)?;
         self.repo_dirs =
             self.repo_dirs.iter().map(|dir| expand(dir, base)).collect::<Result<_>>()?;
-        self.clone_dir = match self.clone_dir.take() {
-            Some(dir) => Some(expand(&dir, base)?),
-            None => default_clone_dir(),
-        };
+        self.clone_dir = self.clone_dir.take().map(|dir| expand(&dir, base)).transpose()?;
         for copy in &mut self.copy {
             copy.from = expand(&copy.from, base)?;
         }
@@ -187,12 +191,9 @@ impl Config {
         if self.base.split('|').all(|base| base.trim().is_empty()) {
             return Err(Error::ConfigInvalid("`base` has no ref".into()));
         }
-        if self.repo_dirs.is_empty() && self.repos.is_empty() {
-            return Err(Error::ConfigInvalid("neither `repo_dirs` nor `repos` set".into()));
-        }
-        if !self.repos.is_empty() && self.clone_dir.is_none() {
+        if self.repo_dirs.is_empty() && self.repos.is_empty() && self.discover.is_empty() {
             return Err(Error::ConfigInvalid(
-                "`clone_dir` missing and no home directory found".into(),
+                "neither `repo_dirs`, `repos` nor `discover` set".into(),
             ));
         }
         for repo in &self.repos {
@@ -297,7 +298,7 @@ mod tests {
         let config = Config::load(Some(&path)).expect("config");
         let home = dirs::home_dir().expect("HOME");
         assert_eq!(config.work_dir, home.join("tickets"));
-        assert_eq!(config.clone_dir, Some(home.join(".grover/repos")));
+        assert_eq!(config.clone_dir, None, "no clone dir is invented");
     }
 
     #[test]

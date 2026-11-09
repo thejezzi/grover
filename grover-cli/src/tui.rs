@@ -1,23 +1,28 @@
 //! Interactive prompts via `inquire`; the only place with TUI code.
 
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+use crossterm::cursor;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::queue;
+use crossterm::style::Print;
+use crossterm::terminal::{self, ClearType};
 use grover_lib::config::{Config, CopySpec, RemoteRepo};
 use grover_lib::error::Error;
 use grover_lib::repo::{self, Source};
 use inquire::ui::{Attributes, Color, ErrorMessageRenderConfig, RenderConfig, StyleSheet, Styled};
-use inquire::{Autocomplete, Confirm, CustomUserError, InquireError, MultiSelect, Select, Text};
+use inquire::{Autocomplete, Confirm, CustomUserError, InquireError};
 
 const PAGE_SIZE: usize = 12;
 const MAX_SUGGESTIONS: usize = 1000;
 const INPUT_HELP: &str = "enter confirm · esc cancel";
 const LIST_INPUT_HELP: &str = "enter confirm · esc back to the list";
 const PATH_INPUT_HELP: &str = "tab complete · ↑↓ pick a suggestion · enter confirm · esc back";
-const SELECT_HELP: &str = "↑↓ move · type filter · enter select · esc cancel";
-const MULTI_SELECT_HELP: &str =
-    "↑↓ move · space pick · →/← all/none · type filter · enter done · esc cancel";
+const LIST_HELP: &str = "j/k move · / search · enter pick · esc back";
+const MULTI_LIST_HELP: &str =
+    "j/k move · space pick · h/l none/all · / search · enter done · esc back";
 const CONFIRM_HELP: &str = "enter confirm · typing y/n flips · ctrl-c abort";
 
 /// Prompts only run on a terminal, so scripts and agents never hang.
@@ -51,7 +56,7 @@ pub struct Tui;
 
 impl Prompter for Tui {
     fn input(&mut self, prompt: &str, default: &str, help: &str) -> anyhow::Result<Option<String>> {
-        let answer = Text::new(prompt)
+        let answer = inquire::Text::new(prompt)
             .with_default(default)
             .with_help_message(help)
             .with_render_config(theme())
@@ -66,7 +71,7 @@ impl Prompter for Tui {
         help: &str,
         files: bool,
     ) -> anyhow::Result<Option<String>> {
-        let answer = Text::new(prompt)
+        let answer = inquire::Text::new(prompt)
             .with_default(default)
             .with_help_message(help)
             .with_autocomplete(PathCompleter::new(files))
@@ -77,12 +82,7 @@ impl Prompter for Tui {
     }
 
     fn select(&mut self, prompt: &str, items: &[String]) -> anyhow::Result<Option<usize>> {
-        let picked = Select::new(prompt, items.to_vec())
-            .with_page_size(PAGE_SIZE)
-            .with_help_message(SELECT_HELP)
-            .with_render_config(theme())
-            .raw_prompt_skippable();
-        Ok(cancelled(picked)?.map(|option| option.index))
+        Ok(pick(prompt, items, false)?.and_then(|picked| picked.first().copied()))
     }
 
     fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool> {
@@ -104,13 +104,7 @@ impl Prompter for Tui {
         prompt: &str,
         items: &[String],
     ) -> anyhow::Result<Option<Vec<usize>>> {
-        let picked = MultiSelect::new(prompt, items.to_vec())
-            .with_page_size(PAGE_SIZE)
-            .with_help_message(MULTI_SELECT_HELP)
-            .with_render_config(theme())
-            .raw_prompt_skippable();
-        let picked = cancelled(picked)?;
-        Ok(picked.map(|options| options.into_iter().map(|option| option.index).collect()))
+        pick(prompt, items, true)
     }
 }
 
@@ -165,6 +159,209 @@ fn interrupted(err: InquireError) -> anyhow::Error {
         InquireError::OperationInterrupted => anyhow::anyhow!("interrupted"),
         err => err.into(),
     }
+}
+
+/// Raw mode while the picker runs; dropping the guard restores the terminal.
+struct RawMode;
+
+impl RawMode {
+    fn new() -> anyhow::Result<RawMode> {
+        terminal::enable_raw_mode()?;
+        Ok(RawMode)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// What one key did to the picker.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Keep,
+    Submit,
+    Back,
+    /// Ctrl-C: the whole run stops, nothing is written.
+    Interrupt,
+}
+
+/// List state: `j`/`k` (or arrows) move, `/` searches, space toggles, Enter picks.
+struct Picker<'a> {
+    prompt: &'a str,
+    items: &'a [String],
+    multi: bool,
+    picks: Vec<bool>,
+    query: String,
+    searching: bool,
+    /// Index into the filtered list, not into `items`.
+    cursor: usize,
+}
+
+impl<'a> Picker<'a> {
+    fn new(prompt: &'a str, items: &'a [String], multi: bool) -> Picker<'a> {
+        Picker {
+            prompt,
+            items,
+            multi,
+            picks: vec![false; items.len()],
+            query: String::new(),
+            searching: false,
+            cursor: 0,
+        }
+    }
+
+    /// Indices of `items` that contain the query, case-insensitive.
+    fn matched(&self) -> Vec<usize> {
+        if self.query.is_empty() {
+            return (0..self.items.len()).collect();
+        }
+        let needle = self.query.to_lowercase();
+        (0..self.items.len())
+            .filter(|&index| self.items[index].to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    fn handle(&mut self, key: KeyEvent) -> Step {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            return Step::Interrupt;
+        }
+        if self.searching {
+            match key.code {
+                KeyCode::Enter => self.searching = false,
+                KeyCode::Esc => {
+                    self.query.clear();
+                    self.searching = false;
+                    self.cursor = 0;
+                }
+                KeyCode::Backspace => {
+                    self.query.pop();
+                    self.cursor = 0;
+                }
+                KeyCode::Char(char) => {
+                    self.query.push(char);
+                    self.cursor = 0;
+                }
+                _ => {}
+            }
+            return Step::Keep;
+        }
+        match key.code {
+            KeyCode::Char('/') => self.searching = true,
+            KeyCode::Char('j') | KeyCode::Down => self.cursor += 1,
+            KeyCode::Char('k') | KeyCode::Up => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => self.cursor = 0,
+            KeyCode::Char('G') | KeyCode::End => self.cursor = usize::MAX,
+            KeyCode::Char('h') if self.multi => self.picks.fill(false),
+            KeyCode::Char('l') if self.multi => self.picks.fill(true),
+            KeyCode::Char(' ') if self.multi => {
+                if let Some(index) = self.matched().get(self.cursor) {
+                    self.picks[*index] = !self.picks[*index];
+                }
+            }
+            KeyCode::Enter => {
+                // Enter on an empty result set would pick nothing; stay instead.
+                if self.matched().get(self.cursor).is_some() {
+                    return Step::Submit;
+                }
+            }
+            KeyCode::Esc => return Step::Back,
+            _ => {}
+        }
+        // Keep the cursor inside the filtered list after a move or a filter change.
+        self.cursor = self.cursor.min(self.matched().len().saturating_sub(1));
+        Step::Keep
+    }
+
+    /// The answer: the entry under the cursor, or every picked entry in list order.
+    fn answer(&self) -> Vec<usize> {
+        if self.multi {
+            return (0..self.items.len()).filter(|&index| self.picks[index]).collect();
+        }
+        self.matched().get(self.cursor).copied().into_iter().collect()
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let matched = self.matched();
+        let mut lines = vec![if self.query.is_empty() {
+            format!("? {}", self.prompt)
+        } else {
+            format!("? {}  /{}", self.prompt, self.query)
+        }];
+        if matched.is_empty() {
+            lines.push("  no matches".to_string());
+        }
+        // Window around the cursor, so a long list stays readable.
+        let first = self.cursor.saturating_sub(PAGE_SIZE / 2);
+        for (position, &index) in matched.iter().enumerate().skip(first).take(PAGE_SIZE) {
+            let mark = if position == self.cursor { "❯" } else { " " };
+            let entry = if self.multi {
+                let box_mark = if self.picks[index] { "[✓]" } else { "[ ]" };
+                format!("{mark} {box_mark} {}", self.items[index])
+            } else {
+                format!("{mark} {}", self.items[index])
+            };
+            lines.push(entry);
+        }
+        let help = if self.searching {
+            "type to search · enter keep filter · esc clear"
+        } else if self.multi {
+            MULTI_LIST_HELP
+        } else {
+            LIST_HELP
+        };
+        lines.push(help.to_string());
+        lines
+    }
+}
+
+/// One list prompt on the terminal; `None` means Esc.
+fn pick(prompt: &str, items: &[String], multi: bool) -> anyhow::Result<Option<Vec<usize>>> {
+    if items.is_empty() {
+        anyhow::bail!("{prompt}: nothing to pick from");
+    }
+    let _raw = RawMode::new()?;
+    let mut out = io::stderr();
+    let mut picker = Picker::new(prompt, items, multi);
+    let mut drawn = 0usize;
+    loop {
+        render_picker(&mut out, &picker.lines(), &mut drawn)?;
+        let Event::Key(key) = event::read()? else { continue };
+        // Windows reports press and release; only a press counts.
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match picker.handle(key) {
+            Step::Keep => {}
+            Step::Back => return Ok(None),
+            Step::Interrupt => anyhow::bail!("interrupted"),
+            Step::Submit => {
+                // Leave the answer visible as the last frame instead of erasing it.
+                render_picker(&mut out, &picker.lines(), &mut drawn)?;
+                return Ok(Some(picker.answer()));
+            }
+        }
+    }
+}
+
+/// Draw `lines` where the previous frame was; `drawn` carries the frame height,
+/// so a shorter frame wipes the lines it no longer uses.
+fn render_picker(out: &mut impl Write, lines: &[String], drawn: &mut usize) -> io::Result<()> {
+    if *drawn > 0 {
+        queue!(out, cursor::MoveUp(*drawn as u16))?;
+    }
+    let previous = *drawn;
+    for line in lines {
+        queue!(out, terminal::Clear(ClearType::CurrentLine), Print(line), Print("\r\n"))?;
+    }
+    for _ in lines.len()..previous {
+        queue!(out, terminal::Clear(ClearType::CurrentLine), Print("\r\n"))?;
+    }
+    *drawn = lines.len();
+    out.flush()
 }
 
 /// Tab completion for paths: the parent directory is listed, names are matched
@@ -344,14 +541,21 @@ static BASE: ScalarField = ScalarField {
     value: |config| config.base.clone(),
     set: set_base,
 };
+static CREATE_BRANCH: ScalarField = ScalarField {
+    name: "create_branch",
+    help: "true: create the ticket branch in each worktree; false: detached.",
+    path: None,
+    value: |config| config.create_branch.to_string(),
+    set: set_create_branch,
+};
 static CLONE_DIR: ScalarField = ScalarField {
     name: "clone_dir",
-    help: "Remote clone folder; empty clears it.",
+    help: "Clone folder for remotes; empty means no clones.",
     path: Some(false),
     value: |config| config.clone_dir.as_deref().map(path_text).unwrap_or_default(),
     set: set_clone_dir,
 };
-static FIELDS: [&ScalarField; 4] = [&WORK_DIR, &BRANCH_TEMPLATE, &BASE, &CLONE_DIR];
+static FIELDS: [&ScalarField; 5] = [&WORK_DIR, &BRANCH_TEMPLATE, &BASE, &CREATE_BRANCH, &CLONE_DIR];
 
 /// One line of the editor menu, in the order the user sees it.
 #[derive(Clone, Copy)]
@@ -359,6 +563,7 @@ enum Field {
     Scalar(&'static ScalarField),
     RepoDirs,
     Repos,
+    Discover,
     Copy,
     Setup,
     Exit,
@@ -370,6 +575,7 @@ impl Field {
             Self::Scalar(field) => field.name,
             Self::RepoDirs => "repo_dirs",
             Self::Repos => "repos",
+            Self::Discover => "discover",
             Self::Copy => "copy",
             Self::Setup => "setup",
             Self::Exit => "",
@@ -381,6 +587,7 @@ impl Field {
             Self::Scalar(field) => (field.value)(config),
             Self::RepoDirs => count(config.repo_dirs.len()),
             Self::Repos => count(config.repos.len()),
+            Self::Discover => count(config.discover.len()),
             Self::Copy => count(config.copy.len()),
             Self::Setup => count(config.setup.len()),
             Self::Exit => String::new(),
@@ -392,6 +599,7 @@ impl Field {
             Self::Scalar(field) => field.help,
             Self::RepoDirs => "Search direct child folders for local repos.",
             Self::Repos => "Remote repos are cloned when selected.",
+            Self::Discover => "Commands printing clone URLs, one per line.",
             Self::Copy => "Copy files into each ticket folder.",
             Self::Setup => "Run commands after each new worktree.",
             Self::Exit => "",
@@ -425,6 +633,15 @@ fn set_branch_template(config: &mut Config, value: &str) -> anyhow::Result<()> {
 fn set_base(config: &mut Config, value: &str) -> anyhow::Result<()> {
     required_value("base", value)?;
     config.base = value.to_string();
+    Ok(())
+}
+
+fn set_create_branch(config: &mut Config, value: &str) -> anyhow::Result<()> {
+    config.create_branch = match value.trim().to_lowercase().as_str() {
+        "true" | "yes" | "1" => true,
+        "false" | "no" | "0" => false,
+        _ => anyhow::bail!("create_branch is true or false, not {value:?}"),
+    };
     Ok(())
 }
 
@@ -470,6 +687,16 @@ pub fn edit_config(
                 edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
                 true
             }
+            Field::Discover => {
+                edit_list(
+                    prompter,
+                    "discover",
+                    &mut config.discover,
+                    |command| command.clone(),
+                    ask_discover,
+                )?;
+                true
+            }
             Field::Copy => {
                 edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
                 true
@@ -494,7 +721,7 @@ pub fn edit_config(
     }
 }
 
-const WIZARD_STEPS: usize = 8;
+const WIZARD_STEPS: usize = 9;
 
 fn step_label(step: usize, name: &str) -> String {
     format!("[{step}/{WIZARD_STEPS}] {name}")
@@ -502,6 +729,7 @@ fn step_label(step: usize, name: &str) -> String {
 
 /// `config --init`: ask every field once, then write. Esc goes back one field,
 /// Ctrl-C and a "no" in the last question leave no file behind.
+/// `clone_dir` is not asked: it stays empty until set by hand or with `--set`.
 pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
     let mut config = match Config::load(Some(path)) {
         Ok(existing) => existing,
@@ -524,14 +752,19 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
                 &step_label(2, BRANCH_TEMPLATE.name),
             )?,
             3 => edit_scalar(prompter, &mut config, &BASE, &step_label(3, BASE.name))?,
-            4 => edit_list(
+            4 => edit_scalar(
                 prompter,
-                &step_label(4, "repo_dirs"),
+                &mut config,
+                &CREATE_BRANCH,
+                &step_label(4, CREATE_BRANCH.name),
+            )?,
+            5 => edit_list(
+                prompter,
+                &step_label(5, "repo_dirs"),
                 &mut config.repo_dirs,
                 |dir| path_text(dir),
                 ask_dir,
             )?,
-            5 => edit_scalar(prompter, &mut config, &CLONE_DIR, &step_label(5, CLONE_DIR.name))?,
             6 => edit_list(
                 prompter,
                 &step_label(6, "repos"),
@@ -539,12 +772,19 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
                 remote_label,
                 ask_remote,
             )?,
-            7 => {
-                edit_list(prompter, &step_label(7, "copy"), &mut config.copy, copy_label, ask_copy)?
+            7 => edit_list(
+                prompter,
+                &step_label(7, "discover"),
+                &mut config.discover,
+                |command| command.clone(),
+                ask_discover,
+            )?,
+            8 => {
+                edit_list(prompter, &step_label(8, "copy"), &mut config.copy, copy_label, ask_copy)?
             }
             _ => edit_list(
                 prompter,
-                &step_label(8, "setup"),
+                &step_label(9, "setup"),
                 &mut config.setup,
                 |command| command.clone(),
                 ask_setup,
@@ -602,9 +842,11 @@ fn menu(config: &Config) -> Vec<(Field, String)> {
         Field::Scalar(&WORK_DIR),
         Field::Scalar(&BRANCH_TEMPLATE),
         Field::Scalar(&BASE),
+        Field::Scalar(&CREATE_BRANCH),
         Field::RepoDirs,
         Field::Scalar(&CLONE_DIR),
         Field::Repos,
+        Field::Discover,
         Field::Copy,
         Field::Setup,
         Field::Exit,
@@ -728,6 +970,11 @@ fn ask_copy(prompter: &mut dyn Prompter) -> anyhow::Result<Option<CopySpec>> {
 
 fn ask_setup(prompter: &mut dyn Prompter) -> anyhow::Result<Option<String>> {
     let command = prompted(prompter, "command", "")?;
+    Ok(command.filter(|command| !command.is_empty()))
+}
+
+fn ask_discover(prompter: &mut dyn Prompter) -> anyhow::Result<Option<String>> {
+    let command = prompted(prompter, "discover command", "")?;
     Ok(command.filter(|command| !command.is_empty()))
 }
 
@@ -906,6 +1153,7 @@ mod tests {
     fn remote_config(path: &Path) -> Config {
         let yaml = concat!(
             "work_dir: tickets\n",
+            "clone_dir: clones\n",
             "repos:\n",
             "  - url: git@github.com:org/api.git\n",
             "  - url: git@github.com:org/web.git\n"
@@ -940,7 +1188,7 @@ mod tests {
 
     #[test]
     fn scalar_fields_set_real_config_values() {
-        let values = ["tickets", "ticket/{ticket}", "main", "clones"];
+        let values = ["tickets", "ticket/{ticket}", "main", "true", "clones"];
         let mut config = Config::new(PathBuf::from("old"));
         for (field, value) in FIELDS.iter().zip(values) {
             (field.set)(&mut config, value).expect("set field");
@@ -958,7 +1206,8 @@ mod tests {
         let config = Config::new(PathBuf::from("tickets"));
         let items = menu(&config);
         assert!(items[0].1.contains(WORK_DIR.help));
-        assert!(items[3].1.contains(Field::RepoDirs.help()));
+        assert!(items[4].1.contains(Field::RepoDirs.help()));
+        assert!(items[3].1.contains(CREATE_BRANCH.help));
     }
 
     /// Temporary tree with `alpha/`, `alpha-beta/` and a plain file.
@@ -1065,11 +1314,11 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(0), // work_dir
             Answer::Input(elsewhere.to_str().expect("utf8").into()),
-            Answer::Select(3), // repo_dirs
+            Answer::Select(4), // repo_dirs
             Answer::Select(0), // add
             Answer::Input(tmp.path().to_str().expect("utf8").into()),
-            Answer::Select(3), // back (two entries plus add and back)
-            Answer::Select(8), // exit
+            Answer::Select(3),  // back (two entries plus add and back)
+            Answer::Select(10), // exit
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(script.path_prompts, ["work_dir", "repo dir"]);
@@ -1082,11 +1331,128 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(2), // base
             Answer::Input("develop".into()),
-            Answer::Select(8),
+            Answer::Select(10),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert!(script.path_prompts.is_empty(), "base is not a path");
         assert_eq!(config.base, "develop");
+    }
+
+    /// Keys as the picker sees them; only `code` matters here.
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn entries() -> Vec<String> {
+        ["api", "api-gateway", "web"].iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn j_and_k_move_and_stop_at_the_ends() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.handle(key(KeyCode::Char('k')));
+        assert_eq!(picker.cursor, 0, "k at the top stays");
+        picker.handle(key(KeyCode::Char('j')));
+        assert_eq!(picker.cursor, 1);
+        for _ in 0..9 {
+            picker.handle(key(KeyCode::Char('j')));
+        }
+        assert_eq!(picker.cursor, 2, "j at the bottom stays");
+        picker.handle(key(KeyCode::Char('g')));
+        assert_eq!(picker.cursor, 0);
+    }
+
+    #[test]
+    fn typing_without_slash_does_not_search() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.handle(key(KeyCode::Char('w')));
+        assert_eq!(picker.query, "", "letters are not a filter");
+        assert_eq!(picker.matched().len(), 3);
+    }
+
+    #[test]
+    fn slash_starts_the_search_and_enter_keeps_it() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.handle(key(KeyCode::Char('/')));
+        for char in "gate".chars() {
+            picker.handle(key(KeyCode::Char(char)));
+        }
+        assert_eq!(picker.matched(), [1]);
+        assert_eq!(picker.answer(), [1]);
+        picker.handle(key(KeyCode::Enter));
+        assert!(!picker.searching);
+        assert_eq!(picker.query, "gate", "the filter stays after enter");
+        assert_eq!(picker.lines()[0], "? Repos  /gate");
+    }
+
+    #[test]
+    fn esc_in_the_search_clears_the_query() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.handle(key(KeyCode::Char('/')));
+        picker.handle(key(KeyCode::Char('w')));
+        assert_eq!(picker.handle(key(KeyCode::Esc)), Step::Keep);
+        assert_eq!(picker.query, "");
+        assert!(!picker.searching);
+        assert_eq!(picker.matched().len(), 3);
+    }
+
+    #[test]
+    fn a_search_without_matches_cannot_be_submitted() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.handle(key(KeyCode::Char('/')));
+        picker.handle(key(KeyCode::Char('z')));
+        picker.handle(key(KeyCode::Enter));
+        assert_eq!(picker.handle(key(KeyCode::Enter)), Step::Keep, "no empty answer");
+        assert_eq!(picker.answer(), Vec::<usize>::new());
+        assert!(picker.lines().iter().any(|line| line.contains("no matches")));
+    }
+
+    #[test]
+    fn multi_select_toggles_with_space_and_takes_list_order() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, true);
+        picker.handle(key(KeyCode::Char('j')));
+        picker.handle(key(KeyCode::Char(' ')));
+        picker.handle(key(KeyCode::Char('g')));
+        picker.handle(key(KeyCode::Char(' ')));
+        assert_eq!(picker.answer(), [0, 1], "picked in list order, not in click order");
+        picker.handle(key(KeyCode::Char(' ')));
+        assert_eq!(picker.answer(), [1], "space toggles off");
+        picker.handle(key(KeyCode::Char('h')));
+        assert_eq!(picker.answer(), Vec::<usize>::new());
+        picker.handle(key(KeyCode::Char('l')));
+        assert_eq!(picker.answer(), [0, 1, 2]);
+    }
+
+    #[test]
+    fn esc_and_enter_leave_the_picker() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, true);
+        assert_eq!(picker.handle(key(KeyCode::Esc)), Step::Back);
+        assert_eq!(picker.handle(key(KeyCode::Enter)), Step::Submit);
+    }
+
+    #[test]
+    fn the_lines_window_follows_the_cursor() {
+        let items: Vec<String> = (0..40).map(|index| format!("repo-{index:02}")).collect();
+        let mut picker = Picker::new("Repos", &items, false);
+        picker.cursor = 30;
+        let lines = picker.lines();
+        assert!(lines.len() <= PAGE_SIZE + 2, "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("❯ repo-30")), "{lines:?}");
+    }
+
+    #[test]
+    fn ctrl_c_interrupts_the_picker() {
+        let items = entries();
+        let mut picker = Picker::new("Repos", &items, true);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL);
+        assert_eq!(picker.handle(ctrl_c), Step::Interrupt);
     }
 
     #[test]
@@ -1170,7 +1536,7 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(0),
             Answer::Input(elsewhere.to_str().expect("utf8").into()),
-            Answer::Select(8),
+            Answer::Select(10),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.work_dir, elsewhere);
@@ -1186,7 +1552,7 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(1),
             Answer::Input("feature".into()),
-            Answer::Select(8),
+            Answer::Select(10),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.branch_template, "ticket/{ticket}");
@@ -1199,12 +1565,12 @@ mod tests {
         let (path, mut config) = config_file(tmp.path());
         let added = tmp.path().join("more");
         let mut script = Script::new(vec![
-            Answer::Select(3),                                   // repo_dirs
+            Answer::Select(4),                                   // repo_dirs
             Answer::Select(0),                                   // add
             Answer::Input(added.to_str().expect("utf8").into()), // entry
             Answer::Select(1),                                   // remove the first entry
             Answer::Select(2),                                   // back
-            Answer::Select(8),                                   // exit
+            Answer::Select(10),                                  // exit
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         let reloaded = Config::load(Some(&path)).expect("reload");
@@ -1216,11 +1582,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let (path, mut config) = config_file(tmp.path());
         let mut script = Script::new(vec![
-            Answer::Select(7),
+            Answer::Select(9),
             Answer::Select(0),
             Answer::Input("npm install".into()),
             Answer::Select(2),
-            Answer::Select(8),
+            Answer::Select(10),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.setup, ["npm install"]);
@@ -1237,11 +1603,12 @@ mod tests {
             Answer::Input(work.to_str().expect("utf8").into()), // work_dir
             Answer::Input(String::new()),                       // branch_template: default
             Answer::Input("main".into()),                       // base
+            Answer::Input("true".into()),                       // create_branch
             Answer::Select(0),                                  // repo_dirs: add
             Answer::Input(code.to_str().expect("utf8").into()), // repo dir
             Answer::Select(2),                                  // repo_dirs: back
-            Answer::Input(String::new()),                       // clone_dir: default
             Answer::Select(1),                                  // repos: back
+            Answer::Select(1),                                  // discover: back
             Answer::Select(1),                                  // copy: back
             Answer::Select(0),                                  // setup: add
             Answer::Input("npm install".into()),
@@ -1257,7 +1624,9 @@ mod tests {
         assert_eq!(reloaded.branch_template, "ticket/{ticket}");
         assert_eq!(reloaded.base, "main");
         assert_eq!(reloaded.repo_dirs, vec![code]);
+        assert!(reloaded.create_branch);
         assert!(reloaded.repos.is_empty());
+        assert!(reloaded.clone_dir.is_none(), "the wizard does not ask for clone_dir");
         assert_eq!(reloaded.setup, ["npm install"]);
         let written = fs::read_to_string(&path).expect("read");
         assert!(!written.contains("repos:"), "empty lists are left out: {written}");
@@ -1272,9 +1641,10 @@ mod tests {
             Answer::Input(work.to_str().expect("utf8").into()), // work_dir
             Answer::Input(String::new()),                       // branch_template
             Answer::Input(String::new()),                       // base
+            Answer::Input(String::new()),                       // create_branch
             Answer::Select(1),                                  // repo_dirs: back, skip
-            Answer::Input(String::new()),                       // clone_dir
             Answer::Select(1),                                  // repos: back, skip
+            Answer::Select(1),                                  // discover: back
             Answer::Select(1),                                  // copy: back
             Answer::Select(1),                                  // setup: back
         ]);
@@ -1299,9 +1669,9 @@ mod tests {
         let (path, mut config) = config_file(tmp.path());
         let before = config.work_dir.clone();
         let mut script = Script::new(vec![
-            Answer::Select(0), // work_dir
-            Answer::Abort,     // esc in the field
-            Answer::Select(8), // exit
+            Answer::Select(0),  // work_dir
+            Answer::Abort,      // esc in the field
+            Answer::Select(10), // exit
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.work_dir, before);
@@ -1328,22 +1698,23 @@ mod tests {
             Answer::Abort,                                      // esc in base: back
             Answer::Input(String::new()),                       // branch_template again
             Answer::Input(String::new()),                       // base
+            Answer::Input(String::new()),                       // create_branch
             Answer::Select(0),                                  // repo_dirs: add
             Answer::Input(code.to_str().expect("utf8").into()),
-            Answer::Select(2),            // repo_dirs: back
-            Answer::Input(String::new()), // clone_dir
-            Answer::Select(1),            // repos: back
-            Answer::Select(1),            // copy: back
-            Answer::Select(1),            // setup: back
-            Answer::Confirm(true),        // write
+            Answer::Select(2),     // repo_dirs: back
+            Answer::Select(1),     // repos: back
+            Answer::Select(1),     // discover: back
+            Answer::Select(1),     // copy: back
+            Answer::Select(1),     // setup: back
+            Answer::Confirm(true), // write
         ]);
         new_config(&path, &mut script).expect("wizard");
         let reloaded = Config::load(Some(&path)).expect("reload");
         assert_eq!(reloaded.work_dir, work);
         assert_eq!(reloaded.repo_dirs, vec![code]);
-        assert_eq!(script.prompts[2], "[3/8] base");
-        assert_eq!(script.prompts[3], "[2/8] branch_template", "esc went back one step");
-        assert_eq!(script.prompts[4], "[3/8] base");
+        assert_eq!(script.prompts[2], "[3/9] base");
+        assert_eq!(script.prompts[3], "[2/9] branch_template", "esc went back one step");
+        assert_eq!(script.prompts[4], "[3/9] base");
     }
 
     #[test]
@@ -1366,14 +1737,15 @@ mod tests {
             Answer::Input(work.to_str().expect("utf8").into()), // work_dir
             Answer::Input(String::new()),                       // branch_template
             Answer::Input(String::new()),                       // base
+            Answer::Input(String::new()),                       // create_branch
             Answer::Select(0),                                  // repo_dirs: add
             Answer::Input(code.to_str().expect("utf8").into()),
-            Answer::Select(2),            // repo_dirs: back
-            Answer::Input(String::new()), // clone_dir
-            Answer::Select(1),            // repos: back
-            Answer::Select(1),            // copy: back
-            Answer::Select(1),            // setup: back
-            Answer::Confirm(false),       // do not write
+            Answer::Select(2),      // repo_dirs: back
+            Answer::Select(1),      // repos: back
+            Answer::Select(1),      // discover: back
+            Answer::Select(1),      // copy: back
+            Answer::Select(1),      // setup: back
+            Answer::Confirm(false), // do not write
         ]);
         let err = new_config(&path, &mut script).expect_err("declined");
         assert!(err.to_string().contains("aborted"), "{err}");
@@ -1389,11 +1761,12 @@ mod tests {
             Answer::Input(before.work_dir.to_str().expect("utf8").into()),
             Answer::Input(String::new()),
             Answer::Input(String::new()),
-            Answer::Select(2), // repo_dirs: back, keep the entry
-            Answer::Input(String::new()),
-            Answer::Select(1), // repos
-            Answer::Select(1), // copy
-            Answer::Select(1), // setup
+            Answer::Input(String::new()), // create_branch: default false
+            Answer::Select(2),            // repo_dirs: back, keep the entry
+            Answer::Select(1),            // repos
+            Answer::Select(1),            // discover
+            Answer::Select(1),            // copy
+            Answer::Select(1),            // setup
             Answer::Confirm(true),
         ]);
         new_config(&path, &mut script).expect("wizard");
@@ -1424,14 +1797,15 @@ mod tests {
             Answer::Input(work.to_str().expect("utf8").into()), // work_dir
             Answer::Input(String::new()),                       // branch_template: default
             Answer::Input(String::new()),                       // base: default
+            Answer::Input(String::new()),                       // create_branch: default
             Answer::Select(0),                                  // repo_dirs: add
             Answer::Input(code.to_str().expect("utf8").into()),
-            Answer::Select(2),            // repo_dirs: back
-            Answer::Input(String::new()), // clone_dir: default
-            Answer::Select(1),            // repos: back
-            Answer::Select(1),            // copy: back
-            Answer::Select(1),            // setup: back
-            Answer::Confirm(true),        // write
+            Answer::Select(2),     // repo_dirs: back
+            Answer::Select(1),     // repos: back
+            Answer::Select(1),     // discover: back
+            Answer::Select(1),     // copy: back
+            Answer::Select(1),     // setup: back
+            Answer::Confirm(true), // write
         ]);
         new_config(&path, &mut script).expect("wizard");
         assert_eq!(script.defaults[1], "ticket/{ticket}", "defaults, not the broken file");

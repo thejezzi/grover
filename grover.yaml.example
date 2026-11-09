@@ -11,6 +11,10 @@ work_dir: "~/work/tickets"
 # Branch name; `{ticket}` is required and replaced by the ticket slug.
 branch_template: "ticket/{ticket}"
 
+# Create the ticket branch in each worktree. Off (the default) leaves every worktree
+# detached at the base ref: nothing to push, nothing to clean up per repo.
+create_branch: false
+
 # Base refs for new branches, tried left to right per repo.
 base: "main|master|HEAD"     # first ref that exists in the repo wins
 
@@ -18,13 +22,19 @@ base: "main|master|HEAD"     # first ref that exists in the repo wins
 repo_dirs:
   - "~/code"
 
-# Destination for clones from `repos`; defaults to ~/.grover/repos.
+# Destination for clones from `repos` and `discover`. Optional: leave it out and only
+# `repo_dirs` is used.
 clone_dir: "~/.grover/repos"
 
 # Repos cloned only when selected. A local repo from `repo_dirs` wins on the same name.
 repos:
   - url: "git@github.com:org/api.git"
     name: api                    # optional, otherwise derived from the URL
+
+# Commands that print clone URLs, one per line. Any CLI works: `gh`, `bb`, `glab`,
+# or your own script. `# ` starts a comment. Needs `clone_dir`.
+discover:
+  - "gh repo list my-org --limit 200 --json sshUrl -q '.[].sshUrl'"
 
 # Files copied into the ticket directory; `to` is relative to that directory.
 copy:

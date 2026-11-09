@@ -76,12 +76,12 @@ $ grover config --init
 ```
 
 It asks for a ticket root (`work_dir`), a branch name pattern, the commit new branches
-start from (the base ref), the folders that contain your repositories, and optional remote
-repositories and files to copy. Every answer except `work_dir` has a default, and nothing
-is written until all values pass validation. The wizard writes to the config that reading
-would find; on Linux, a fresh machine uses `~/.config/grover/config.yaml`. `--config PATH`
-writes it somewhere else, and `--force` overwrites an existing file. `grover config --path`
-prints the path actually used.
+start from (the base ref), whether to create that branch at all, the folders and commands
+that provide your repositories, and optional files to copy. Every answer except `work_dir`
+has a default, and nothing is written until all values pass validation. The wizard writes
+to the config that reading would find; on Linux, a fresh machine uses
+`~/.config/grover/config.yaml`. `--config PATH` writes it somewhere else, and `--force`
+overwrites an existing file. `grover config --path` prints the path actually used.
 
 The same settings can be written by hand; see
 [docs/configuration.md](docs/configuration.md) for every field.
@@ -98,7 +98,13 @@ clones, when the entry is a remote repository. The repository name is matched fu
 `-r api` also works when you type `API` or `ap`, provided the match is unambiguous.
 
 Omit the ticket or `-r` and `grover` asks on a terminal; in a script it fails instead of
-hanging, so `grover new` is safe inside agents and CI.
+hanging, so `grover new` is safe inside agents and CI. In the picker, `j`/`k` move and `/`
+starts a search, so typing a letter does not filter by accident.
+
+By default the worktrees are detached at the base commit: no branch per repository, nothing
+to push or clean up. Set `create_branch: true` (or
+`grover config --set create_branch=true`) when you want grover to create the ticket branch
+in every worktree.
 
 ## The commands
 
