@@ -57,12 +57,16 @@ pub struct Report {
 impl Plan {
     /// Resolve repos and compute targets; writes nothing.
     pub fn build(config: &Config, request: &Request) -> Result<Plan> {
+        Self::build_with_repos(config, request, &repo::discover(config))
+    }
+
+    /// Build from a repo snapshot already shown to the user.
+    pub fn build_with_repos(config: &Config, request: &Request, repos: &[Repo]) -> Result<Plan> {
         let slug = slug(&request.ticket)?;
         let branch = branch_name(config, &slug, request);
         let ticket_dir = config.work_dir.join(&slug);
 
-        let repos = repo::discover(config);
-        let chosen = repo::select(&repos, &request.repos, request.all)?;
+        let chosen = repo::select(repos, &request.repos, request.all)?;
         let worktrees = chosen
             .into_iter()
             .map(|repo| Worktree { path: ticket_dir.join(&repo.name), repo: repo.clone() })

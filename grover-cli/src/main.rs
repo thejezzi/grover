@@ -110,9 +110,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::New { ticket, repo, all, title, dry_run } => {
             let config = Config::load(config_path)?;
-            let (ticket, repos, title) = new_inputs(&config, ticket, repo, all, title)?;
+            let tui::NewInputs { ticket, repos, title, repo_snapshot } =
+                new_inputs(&config, ticket, repo, all, title)?;
             let request = Request { ticket, repos, all, title };
-            let plan = Plan::build(&config, &request)?;
+            let plan = match repo_snapshot {
+                Some(repos) => Plan::build_with_repos(&config, &request, &repos)?,
+                None => Plan::build(&config, &request)?,
+            };
             let report = plan.apply(dry_run)?;
             if dry_run {
                 tracing::info!("dry-run: nothing written");
@@ -165,12 +169,12 @@ fn new_inputs(
     repos: Vec<String>,
     all: bool,
     title: Option<String>,
-) -> anyhow::Result<(String, Vec<String>, Option<String>)> {
+) -> anyhow::Result<tui::NewInputs> {
     if tui::available() {
         return tui::complete(&mut tui::Tui, config, ticket, repos, all, title);
     }
     let ticket = ticket.ok_or_else(|| anyhow!("missing ticket: pass <ticket>"))?;
-    Ok((ticket, repos, title))
+    Ok(tui::NewInputs { ticket, repos, title, repo_snapshot: None })
 }
 
 /// Ticket for `rm`: the argument, else a pick on a terminal; never guessed from the cwd.

@@ -34,13 +34,14 @@ pub fn available() -> bool {
 pub trait Prompter {
     fn input(&mut self, prompt: &str, default: &str, help: &str) -> anyhow::Result<Option<String>>;
     /// Like [`Prompter::input`], with tab completion for paths; `files` also
-    /// suggests plain files, otherwise only folders.
+    /// suggests plain files, otherwise only folders. Relative paths use `relative_to`.
     fn input_path(
         &mut self,
         prompt: &str,
         default: &str,
         help: &str,
         files: bool,
+        relative_to: &Path,
     ) -> anyhow::Result<Option<String>>;
     fn select(&mut self, prompt: &str, items: &[String]) -> anyhow::Result<Option<usize>>;
     fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool>;
@@ -70,11 +71,12 @@ impl Prompter for Tui {
         default: &str,
         help: &str,
         files: bool,
+        relative_to: &Path,
     ) -> anyhow::Result<Option<String>> {
         let answer = inquire::Text::new(prompt)
             .with_default(default)
             .with_help_message(help)
-            .with_autocomplete(PathCompleter::new(files))
+            .with_autocomplete(PathCompleter::new(files, relative_to))
             .with_page_size(PAGE_SIZE)
             .with_render_config(theme())
             .prompt_skippable();
@@ -368,41 +370,42 @@ fn render_picker(out: &mut impl Write, lines: &[String], drawn: &mut usize) -> i
 /// against the last segment. A typed `~` stays a `~` in the suggestions.
 #[derive(Clone)]
 struct PathCompleter {
-    cwd: PathBuf,
+    base: PathBuf,
     /// `false` for folder prompts: only directories are suggested.
     files: bool,
 }
 
 impl PathCompleter {
-    fn new(files: bool) -> PathCompleter {
-        PathCompleter { cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), files }
+    fn new(files: bool, base: &Path) -> PathCompleter {
+        PathCompleter { base: base.to_path_buf(), files }
     }
 
-    /// Typed prefix (through the last `/`), the directory to read, and the
-    /// partial last segment. A lone `~` lists the home directory.
+    /// Typed prefix, the directory to read, and the partial last segment.
+    /// Relative paths use the config directory; a lone `~` lists home.
     fn split(&self, input: &str) -> (String, PathBuf, String) {
-        match input.rfind('/') {
+        let separator = input.rfind([std::path::MAIN_SEPARATOR, '/']);
+        match separator {
             Some(index) => {
                 let prefix = &input[..=index];
                 (prefix.to_string(), self.lookup(prefix), input[index + 1..].to_string())
             }
             None if input == "~" => ("~/".to_string(), self.lookup("~/"), String::new()),
-            None => (String::new(), self.cwd.clone(), input.to_string()),
+            None => (String::new(), self.base.clone(), input.to_string()),
         }
     }
 
     /// The typed prefix as a real directory to read; `~` only exists as text.
     fn lookup(&self, prefix: &str) -> PathBuf {
         if prefix.is_empty() {
-            return self.cwd.clone();
+            return self.base.clone();
         }
         if let Some(rest) = prefix.strip_prefix('~') {
             if let Some(home) = dirs::home_dir() {
-                return home.join(rest.trim_start_matches('/'));
+                return home.join(rest.trim_start_matches([std::path::MAIN_SEPARATOR, '/']));
             }
         }
         let path = PathBuf::from(prefix);
-        if path.is_absolute() { path } else { self.cwd.join(path) }
+        if path.is_absolute() { path } else { self.base.join(path) }
     }
 
     /// Candidate entries for `input`, as they would be shown to the user.
@@ -447,15 +450,23 @@ impl Autocomplete for PathCompleter {
     }
 }
 
+/// Inputs for `new`; a repo snapshot is set when the picker displayed it.
+pub(super) struct NewInputs {
+    pub(super) ticket: String,
+    pub(super) repos: Vec<String>,
+    pub(super) title: Option<String>,
+    pub(super) repo_snapshot: Option<Vec<repo::Repo>>,
+}
+
 /// Fills `new` inputs: prompts only for what is missing.
-pub fn complete(
+pub(super) fn complete(
     prompter: &mut dyn Prompter,
     config: &Config,
     ticket: Option<String>,
     repos: Vec<String>,
     all: bool,
     title: Option<String>,
-) -> anyhow::Result<(String, Vec<String>, Option<String>)> {
+) -> anyhow::Result<NewInputs> {
     let ticket = match ticket {
         Some(ticket) => ticket,
         None => ask_ticket(prompter)?,
@@ -467,9 +478,10 @@ pub fn complete(
         None => None,
     };
     if all || !repos.is_empty() {
-        return Ok((ticket, repos, title));
+        return Ok(NewInputs { ticket, repos, title, repo_snapshot: None });
     }
-    Ok((ticket, ask_repos(prompter, config)?, title))
+    let (repos, snapshot) = ask_repos(prompter, config)?;
+    Ok(NewInputs { ticket, repos, title, repo_snapshot: Some(snapshot) })
 }
 
 /// Ticket for `new`; the slug check happens later in `Plan::build`.
@@ -492,7 +504,10 @@ pub fn pick_ticket(prompter: &mut dyn Prompter, tickets: &[String]) -> anyhow::R
 }
 
 /// Repos for `new`: multi-select over the discovered repos, re-asked while empty.
-fn ask_repos(prompter: &mut dyn Prompter, config: &Config) -> anyhow::Result<Vec<String>> {
+fn ask_repos(
+    prompter: &mut dyn Prompter,
+    config: &Config,
+) -> anyhow::Result<(Vec<String>, Vec<repo::Repo>)> {
     let repos = repo::discover(config);
     if repos.is_empty() {
         return Err(Error::NoRepos.into());
@@ -512,7 +527,7 @@ fn ask_repos(prompter: &mut dyn Prompter, config: &Config) -> anyhow::Result<Vec
             .filter_map(|index| repos.get(index))
             .map(|repo| repo.name.clone())
             .collect();
-        return Ok(names);
+        return Ok((names, repos));
     }
 }
 
@@ -674,6 +689,7 @@ pub fn edit_config(
     path: &Path,
     prompter: &mut dyn Prompter,
 ) -> anyhow::Result<()> {
+    let base = relative_base(path);
     loop {
         let fields = menu(config);
         let items: Vec<String> = fields.iter().map(|(_, label)| label.clone()).collect();
@@ -685,14 +701,14 @@ pub fn edit_config(
         let field = fields.get(choice).map_or(Field::Exit, |(field, _)| *field);
         // Lists write on leave: entries are already added or removed here.
         let changed = match field {
-            Field::Scalar(field) => edit_scalar(prompter, config, field, field.name)?,
+            Field::Scalar(field) => edit_scalar(prompter, config, field, field.name, &base)?,
             Field::RepoDirs => {
                 edit_list(
                     prompter,
                     "repo_dirs",
                     &mut config.repo_dirs,
                     |dir| path_text(dir),
-                    ask_dir,
+                    |prompter| ask_dir(prompter, &base),
                 )?;
                 true
             }
@@ -711,7 +727,9 @@ pub fn edit_config(
                 true
             }
             Field::Copy => {
-                edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
+                edit_list(prompter, "copy", &mut config.copy, copy_label, |prompter| {
+                    ask_copy(prompter, &base)
+                })?;
                 true
             }
             Field::Setup => {
@@ -744,6 +762,7 @@ fn step_label(step: usize, name: &str) -> String {
 /// Ctrl-C and a "no" in the last question leave no file behind.
 /// `clone_dir` is not asked: it stays empty until set by hand or with `--set`.
 pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
+    let base = relative_base(path);
     let mut config = match Config::load(Some(path)) {
         Ok(existing) => existing,
         Err(err) => {
@@ -757,26 +776,30 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
     let mut step = 1;
     while step <= WIZARD_STEPS {
         let forward = match step {
-            1 => edit_scalar(prompter, &mut config, &WORK_DIR, &step_label(1, WORK_DIR.name))?,
+            1 => {
+                edit_scalar(prompter, &mut config, &WORK_DIR, &step_label(1, WORK_DIR.name), &base)?
+            }
             2 => edit_scalar(
                 prompter,
                 &mut config,
                 &BRANCH_TEMPLATE,
                 &step_label(2, BRANCH_TEMPLATE.name),
+                &base,
             )?,
-            3 => edit_scalar(prompter, &mut config, &BASE, &step_label(3, BASE.name))?,
+            3 => edit_scalar(prompter, &mut config, &BASE, &step_label(3, BASE.name), &base)?,
             4 => edit_scalar(
                 prompter,
                 &mut config,
                 &CREATE_BRANCH,
                 &step_label(4, CREATE_BRANCH.name),
+                &base,
             )?,
             5 => edit_list(
                 prompter,
                 &step_label(5, "repo_dirs"),
                 &mut config.repo_dirs,
                 |dir| path_text(dir),
-                ask_dir,
+                |prompter| ask_dir(prompter, &base),
             )?,
             6 => edit_list(
                 prompter,
@@ -792,9 +815,13 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
                 |command| command.clone(),
                 ask_discover,
             )?,
-            8 => {
-                edit_list(prompter, &step_label(8, "copy"), &mut config.copy, copy_label, ask_copy)?
-            }
+            8 => edit_list(
+                prompter,
+                &step_label(8, "copy"),
+                &mut config.copy,
+                copy_label,
+                |prompter| ask_copy(prompter, &base),
+            )?,
             _ => edit_list(
                 prompter,
                 &step_label(9, "setup"),
@@ -831,6 +858,7 @@ pub fn set_config_field(
         anyhow::bail!("unknown field {name:?}; choose one of: {fields}");
     };
     let mut config = Config::load(Some(path))?;
+    let base = relative_base(path);
     if let Some(value) = value {
         (field.set)(&mut config, value)?;
     } else {
@@ -838,7 +866,7 @@ pub fn set_config_field(
             anyhow::bail!("no terminal to ask for a value; use `--set {name}=<value>`");
         }
         loop {
-            let answer = prompt_value(prompter, field, name, "")?;
+            let answer = prompt_value(prompter, field, name, "", &base)?;
             let value = answer.ok_or_else(abort)?;
             match (field.set)(&mut config, &value) {
                 Ok(()) => break,
@@ -918,10 +946,11 @@ fn edit_scalar(
     config: &mut Config,
     field: &'static ScalarField,
     label: &str,
+    relative_to: &Path,
 ) -> anyhow::Result<bool> {
     let current = (field.value)(config);
     loop {
-        let answer = prompt_value(prompter, field, label, &current)?;
+        let answer = prompt_value(prompter, field, label, &current, relative_to)?;
         let Some(answer) = answer else {
             return Ok(false);
         };
@@ -939,17 +968,18 @@ fn prompt_value(
     field: &ScalarField,
     prompt: &str,
     default: &str,
+    relative_to: &Path,
 ) -> anyhow::Result<Option<String>> {
     let answer = match field.path {
-        Some(files) => prompter.input_path(prompt, default, field.help, files)?,
+        Some(files) => prompter.input_path(prompt, default, field.help, files, relative_to)?,
         None => prompter.input(prompt, default, field.help)?,
     };
     Ok(answer.map(|answer| answer.trim().to_string()))
 }
 
 /// `None` means Esc: no entry, back to the list.
-fn ask_dir(prompter: &mut dyn Prompter) -> anyhow::Result<Option<PathBuf>> {
-    let answer = prompted_path(prompter, "repo dir", "", false)?;
+fn ask_dir(prompter: &mut dyn Prompter, relative_to: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let answer = prompted_path(prompter, "repo dir", "", false, relative_to)?;
     Ok(answer.filter(|answer| !answer.is_empty()).map(PathBuf::from))
 }
 
@@ -966,8 +996,8 @@ fn ask_remote(prompter: &mut dyn Prompter) -> anyhow::Result<Option<RemoteRepo>>
     Ok(Some(RemoteRepo { url, name: (!name.is_empty()).then_some(name) }))
 }
 
-fn ask_copy(prompter: &mut dyn Prompter) -> anyhow::Result<Option<CopySpec>> {
-    let Some(from) = prompted_path(prompter, "from", "", true)? else {
+fn ask_copy(prompter: &mut dyn Prompter, relative_to: &Path) -> anyhow::Result<Option<CopySpec>> {
+    let Some(from) = prompted_path(prompter, "from", "", true, relative_to)? else {
         return Ok(None);
     };
     if from.is_empty() {
@@ -1020,8 +1050,9 @@ fn prompted_path(
     prompt: &str,
     default: &str,
     files: bool,
+    relative_to: &Path,
 ) -> anyhow::Result<Option<String>> {
-    let answer = prompter.input_path(prompt, default, PATH_INPUT_HELP, files)?;
+    let answer = prompter.input_path(prompt, default, PATH_INPUT_HELP, files, relative_to)?;
     Ok(answer.map(|answer| answer.trim().to_string()))
 }
 
@@ -1032,6 +1063,13 @@ fn prompted_with_help(
     help: &str,
 ) -> anyhow::Result<Option<String>> {
     Ok(prompter.input(prompt, default, help)?.map(|answer| answer.trim().to_string()))
+}
+
+fn relative_base(path: &Path) -> PathBuf {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .to_path_buf()
 }
 
 fn path_text(path: &Path) -> String {
@@ -1081,6 +1119,7 @@ mod tests {
         help_messages: Vec<String>,
         defaults: Vec<String>,
         path_prompts: Vec<String>,
+        path_bases: Vec<PathBuf>,
     }
 
     impl Script {
@@ -1091,6 +1130,7 @@ mod tests {
                 help_messages: Vec::new(),
                 defaults: Vec::new(),
                 path_prompts: Vec::new(),
+                path_bases: Vec::new(),
             }
         }
 
@@ -1130,8 +1170,10 @@ mod tests {
             default: &str,
             help: &str,
             _files: bool,
+            relative_to: &Path,
         ) -> anyhow::Result<Option<String>> {
             self.path_prompts.push(prompt.to_string());
+            self.path_bases.push(relative_to.to_path_buf());
             self.input(prompt, default, help)
         }
 
@@ -1230,7 +1272,7 @@ mod tests {
         fs::create_dir(tmp.path().join("alpha-beta")).expect("alpha-beta");
         fs::write(tmp.path().join("alphafile"), "").expect("alphafile");
         fs::create_dir(tmp.path().join("other")).expect("other");
-        let completer = PathCompleter { cwd: tmp.path().to_path_buf(), files: true };
+        let completer = PathCompleter { base: tmp.path().to_path_buf(), files: true };
         (tmp, completer)
     }
 
@@ -1255,9 +1297,32 @@ mod tests {
     }
 
     #[test]
+    fn relative_suggestions_use_the_config_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_dir = tmp.path().join("config");
+        let current_dir = tmp.path().join("current");
+        fs::create_dir_all(config_dir.join("repos")).expect("config repos");
+        fs::create_dir_all(current_dir.join("repo-current")).expect("current repos");
+        let mut completer = PathCompleter { base: config_dir.clone(), files: false };
+
+        assert_eq!(completer.get_suggestions("repo").expect("suggestions"), ["repos"]);
+        assert_eq!(completer.split("repo"), (String::new(), config_dir, "repo".into()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_backslashes_split_path_prefixes() {
+        let completer = PathCompleter { base: PathBuf::new(), files: true };
+        let (prefix, directory, partial) = completer.split(r"C:\work\code");
+        assert_eq!(prefix, r"C:\work\");
+        assert_eq!(directory, PathBuf::from(r"C:\work\"));
+        assert_eq!(partial, "code");
+    }
+
+    #[test]
     fn folder_prompts_skip_plain_files() {
         let (tmp, completer) = completer_tree();
-        let mut folders = PathCompleter { cwd: completer.cwd.clone(), files: false };
+        let mut folders = PathCompleter { base: completer.base.clone(), files: false };
         assert_eq!(folders.get_suggestions("alp").expect("suggestions"), ["alpha", "alpha-beta"]);
         assert!(folders.get_suggestions("alphafile").expect("suggestions").is_empty());
         assert!(tmp.path().join("alphafile").is_file());
@@ -1296,7 +1361,7 @@ mod tests {
 
     #[test]
     fn tilde_stays_a_tilde_in_the_suggestions() {
-        let mut completer = PathCompleter::new(false);
+        let mut completer = PathCompleter::new(false, Path::new("."));
         let suggestions = completer.get_suggestions("~/.gro").expect("suggestions");
         for suggestion in &suggestions {
             assert!(suggestion.starts_with("~/"), "kept the shortcut: {suggestion}");
@@ -1305,7 +1370,7 @@ mod tests {
 
     #[test]
     fn a_lone_tilde_lists_the_home_directory() {
-        let mut completer = PathCompleter::new(false);
+        let mut completer = PathCompleter::new(false, Path::new("."));
         let suggestions = completer.get_suggestions("~").expect("suggestions");
         let home = dirs::home_dir().expect("home");
         let expected: Option<String> = fs::read_dir(&home).ok().and_then(|entries| {
@@ -1335,6 +1400,7 @@ mod tests {
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(script.path_prompts, ["work_dir", "repo dir"]);
+        assert_eq!(script.path_bases, [tmp.path(), tmp.path()]);
     }
 
     #[test]
@@ -1510,7 +1576,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("remotes.yaml");
         let mut script = Script::new(vec![Answer::Multi(vec![]), Answer::Multi(vec![1])]);
-        let repos = ask_repos(&mut script, &remote_config(&path)).expect("repos");
+        let (repos, _) = ask_repos(&mut script, &remote_config(&path)).expect("repos");
         assert_eq!(repos, ["web"]);
         assert_eq!(script.prompts.len(), 2);
     }
@@ -1522,12 +1588,42 @@ mod tests {
         let config = remote_config(&path);
         let mut script = Script::new(vec![]);
         let given = (Some("PROJ-1".to_string()), vec!["api".to_string()]);
-        let (ticket, repos, title) =
+        let inputs =
             complete(&mut script, &config, given.0, given.1, false, None).expect("complete");
-        assert_eq!(ticket, "PROJ-1");
-        assert_eq!(repos, ["api"]);
-        assert_eq!(title, None);
+        assert_eq!(inputs.ticket, "PROJ-1");
+        assert_eq!(inputs.repos, ["api"]);
+        assert_eq!(inputs.title, None);
+        assert!(inputs.repo_snapshot.is_none());
         assert!(script.prompts.is_empty());
+    }
+
+    #[test]
+    fn interactive_discovery_is_reused_to_build_the_plan() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let marker = tmp.path().join("discover-count");
+        let mut config = Config::new(tmp.path().join("tickets"));
+        config.clone_dir = Some(tmp.path().join("clones"));
+        config.discover.push(format!(
+            "printf '%s\\n' git@github.com:org/api.git; printf x >> {}",
+            marker.display()
+        ));
+        let mut script = Script::new(vec![Answer::Input("PROJ-1".into()), Answer::Multi(vec![0])]);
+
+        let inputs = complete(&mut script, &config, None, vec![], false, None).expect("complete");
+        let request = grover_lib::plan::Request {
+            ticket: inputs.ticket,
+            repos: inputs.repos,
+            all: false,
+            title: inputs.title,
+        };
+        grover_lib::plan::Plan::build_with_repos(
+            &config,
+            &request,
+            &inputs.repo_snapshot.expect("picker snapshot"),
+        )
+        .expect("plan");
+
+        assert_eq!(fs::read_to_string(marker).expect("discover count"), "x");
     }
 
     #[test]
@@ -1535,11 +1631,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("remotes.yaml");
         let mut script = Script::new(vec![Answer::Input("PROJ-2".into())]);
-        let (ticket, repos, _) =
-            complete(&mut script, &remote_config(&path), None, vec![], true, None)
-                .expect("complete");
-        assert_eq!(ticket, "PROJ-2");
-        assert!(repos.is_empty());
+        let inputs = complete(&mut script, &remote_config(&path), None, vec![], true, None)
+            .expect("complete");
+        assert_eq!(inputs.ticket, "PROJ-2");
+        assert!(inputs.repos.is_empty());
+        assert!(inputs.repo_snapshot.is_none());
         assert_eq!(script.prompts, ["Ticket"]);
     }
 
@@ -1551,18 +1647,16 @@ mod tests {
         branchy.create_branch = true;
         let mut script =
             Script::new(vec![Answer::Input("PROJ-3".into()), Answer::Input("Dark mode".into())]);
-        let (_, _, title) =
-            complete(&mut script, &branchy, None, vec![], true, None).expect("complete");
-        assert_eq!(title.as_deref(), Some("Dark mode"));
+        let inputs = complete(&mut script, &branchy, None, vec![], true, None).expect("complete");
+        assert_eq!(inputs.title.as_deref(), Some("Dark mode"));
         assert_eq!(script.prompts, ["Ticket", "Title (empty = none)"]);
 
         // Without branches the title has no effect, so the prompt stays away.
         let mut plain = remote_config(&path);
         plain.create_branch = false;
         let mut script = Script::new(vec![Answer::Input("PROJ-4".into())]);
-        let (_, _, title) =
-            complete(&mut script, &plain, None, vec![], true, None).expect("complete");
-        assert_eq!(title, None);
+        let inputs = complete(&mut script, &plain, None, vec![], true, None).expect("complete");
+        assert_eq!(inputs.title, None);
         assert_eq!(script.prompts, ["Ticket"]);
     }
 
