@@ -8,23 +8,26 @@ use grover_lib::config::{Config, CopySpec, RemoteRepo};
 use grover_lib::error::Error;
 use grover_lib::repo::{self, Source};
 use inquire::ui::{Attributes, Color, ErrorMessageRenderConfig, RenderConfig, StyleSheet, Styled};
-use inquire::{InquireError, MultiSelect, Select, Text};
+use inquire::{Confirm, InquireError, MultiSelect, Select, Text};
 
 const PAGE_SIZE: usize = 12;
 const INPUT_HELP: &str = "enter confirm · esc cancel";
+const LIST_INPUT_HELP: &str = "enter confirm · esc back to the list";
 const SELECT_HELP: &str = "↑↓ move · type filter · enter select · esc cancel";
 const MULTI_SELECT_HELP: &str =
     "↑↓ move · space pick · →/← all/none · type filter · enter done · esc cancel";
+const CONFIRM_HELP: &str = "enter confirm · typing y/n flips · ctrl-c abort";
 
 /// Prompts only run on a terminal, so scripts and agents never hang.
 pub fn available() -> bool {
     io::stdin().is_terminal()
 }
 
-/// What the flows ask; `None` means the user aborted.
+/// What the flows ask; `None` means the user went back one step.
 pub trait Prompter {
-    fn input(&mut self, prompt: &str, initial: &str, help: &str) -> anyhow::Result<Option<String>>;
+    fn input(&mut self, prompt: &str, default: &str, help: &str) -> anyhow::Result<Option<String>>;
     fn select(&mut self, prompt: &str, items: &[String]) -> anyhow::Result<Option<usize>>;
+    fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool>;
     fn multi_select(
         &mut self,
         prompt: &str,
@@ -36,9 +39,9 @@ pub trait Prompter {
 pub struct Tui;
 
 impl Prompter for Tui {
-    fn input(&mut self, prompt: &str, initial: &str, help: &str) -> anyhow::Result<Option<String>> {
+    fn input(&mut self, prompt: &str, default: &str, help: &str) -> anyhow::Result<Option<String>> {
         let answer = Text::new(prompt)
-            .with_initial_value(initial)
+            .with_default(default)
             .with_help_message(help)
             .with_render_config(theme())
             .prompt_skippable();
@@ -52,6 +55,20 @@ impl Prompter for Tui {
             .with_render_config(theme())
             .raw_prompt_skippable();
         Ok(cancelled(picked)?.map(|option| option.index))
+    }
+
+    fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool> {
+        let answer = Confirm::new(prompt)
+            .with_default(default)
+            .with_help_message(CONFIRM_HELP)
+            .with_render_config(theme())
+            .prompt();
+        match answer {
+            Ok(answer) => Ok(answer),
+            // Esc at the last question means "no": nothing is written either way.
+            Err(InquireError::OperationCanceled) => Ok(false),
+            Err(err) => Err(interrupted(err)),
+        }
     }
 
     fn multi_select(
@@ -96,6 +113,7 @@ fn themed(no_color: bool) -> RenderConfig<'static> {
     theme.canceled_prompt_indicator = theme.canceled_prompt_indicator.with_fg(Color::LightRed);
     theme.prompt = StyleSheet::new().with_attr(Attributes::BOLD);
     theme.help_message = StyleSheet::new().with_fg(Color::DarkGrey);
+    theme.default_value = StyleSheet::new().with_fg(Color::DarkGrey);
     theme.placeholder = StyleSheet::new().with_fg(Color::DarkGrey);
     theme.answer = StyleSheet::new().with_fg(Color::LightCyan);
     theme.selected_option =
@@ -104,12 +122,20 @@ fn themed(no_color: bool) -> RenderConfig<'static> {
     theme
 }
 
-/// ESC and Ctrl-C are an abort, not an error.
+/// ESC is "back one step", not an error; Ctrl-C is.
 fn cancelled<T>(result: Result<Option<T>, InquireError>) -> anyhow::Result<Option<T>> {
     match result {
         Ok(answer) => Ok(answer),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
-        Err(err) => Err(err.into()),
+        Err(InquireError::OperationCanceled) => Ok(None),
+        Err(err) => Err(interrupted(err)),
+    }
+}
+
+/// Ctrl-C (or any other prompt error) ends the run: exit 1, nothing written.
+fn interrupted(err: InquireError) -> anyhow::Error {
+    match err {
+        InquireError::OperationInterrupted => anyhow::anyhow!("interrupted"),
+        err => err.into(),
     }
 }
 
@@ -295,6 +321,7 @@ fn scalar_field(name: &str) -> Option<&'static ScalarField> {
 }
 
 /// Config editor: one menu over all top-level fields, written after each entry.
+/// Esc in the menu leaves the editor; Esc in a field goes back to the menu.
 pub fn edit_config(
     config: &mut Config,
     path: &Path,
@@ -305,50 +332,119 @@ pub fn edit_config(
         let items: Vec<String> = fields.iter().map(|(_, label)| label.clone()).collect();
         let title = format!("Config · {}", path.display());
         let Some(choice) = prompter.select(&title, &items)? else {
-            return Err(abort());
+            return Ok(());
         };
         // An index without a field leaves the editor: nothing to ask, nothing to write.
         let field = fields.get(choice).map_or(Field::Exit, |(field, _)| *field);
-        match field {
-            Field::Scalar(field) => edit_scalar(prompter, config, field)?,
-            Field::RepoDirs => edit_list(
-                prompter,
-                "repo_dirs",
-                &mut config.repo_dirs,
-                |dir| path_text(dir),
-                ask_dir,
-            )?,
-            Field::Repos => {
-                edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?
+        // Lists write on leave: entries are already added or removed here.
+        let changed = match field {
+            Field::Scalar(field) => edit_scalar(prompter, config, field, field.name)?,
+            Field::RepoDirs => {
+                edit_list(
+                    prompter,
+                    "repo_dirs",
+                    &mut config.repo_dirs,
+                    |dir| path_text(dir),
+                    ask_dir,
+                )?;
+                true
             }
-            Field::Copy => edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?,
-            Field::Setup => edit_list(
-                prompter,
-                "setup",
-                &mut config.setup,
-                |command| command.clone(),
-                ask_setup,
-            )?,
+            Field::Repos => {
+                edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
+                true
+            }
+            Field::Copy => {
+                edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
+                true
+            }
+            Field::Setup => {
+                edit_list(
+                    prompter,
+                    "setup",
+                    &mut config.setup,
+                    |command| command.clone(),
+                    ask_setup,
+                )?;
+                true
+            }
             Field::Exit => return Ok(()),
-        }
-        if let Err(err) = save_and_reload(config, path) {
-            tracing::warn!("not saved: {err}");
+        };
+        if changed {
+            if let Err(err) = save_and_reload(config, path) {
+                tracing::warn!("not saved: {err}");
+            }
         }
     }
 }
 
-/// `config --init`: ask every field once, then write. Nothing is written on error.
+const WIZARD_STEPS: usize = 8;
+
+fn step_label(step: usize, name: &str) -> String {
+    format!("[{step}/{WIZARD_STEPS}] {name}")
+}
+
+/// `config --init`: ask every field once, then write. Esc goes back one field,
+/// Ctrl-C and a "no" in the last question leave no file behind.
 pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
-    let mut config = Config::new(PathBuf::new());
-    edit_scalar(prompter, &mut config, &WORK_DIR)?;
-    edit_scalar(prompter, &mut config, &BRANCH_TEMPLATE)?;
-    edit_scalar(prompter, &mut config, &BASE)?;
-    edit_list(prompter, "repo_dirs", &mut config.repo_dirs, |dir| path_text(dir), ask_dir)?;
-    edit_scalar(prompter, &mut config, &CLONE_DIR)?;
-    edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
-    edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
-    edit_list(prompter, "setup", &mut config.setup, |command| command.clone(), ask_setup)?;
+    let mut config = match Config::load(Some(path)) {
+        Ok(existing) => existing,
+        Err(err) => {
+            // A broken file (only reachable with `--force`) starts empty instead.
+            if path.exists() {
+                tracing::warn!("{err}; starting from the defaults");
+            }
+            Config::new(PathBuf::new())
+        }
+    };
+    let mut step = 1;
+    while step <= WIZARD_STEPS {
+        let forward = match step {
+            1 => edit_scalar(prompter, &mut config, &WORK_DIR, &step_label(1, WORK_DIR.name))?,
+            2 => edit_scalar(
+                prompter,
+                &mut config,
+                &BRANCH_TEMPLATE,
+                &step_label(2, BRANCH_TEMPLATE.name),
+            )?,
+            3 => edit_scalar(prompter, &mut config, &BASE, &step_label(3, BASE.name))?,
+            4 => edit_list(
+                prompter,
+                &step_label(4, "repo_dirs"),
+                &mut config.repo_dirs,
+                |dir| path_text(dir),
+                ask_dir,
+            )?,
+            5 => edit_scalar(prompter, &mut config, &CLONE_DIR, &step_label(5, CLONE_DIR.name))?,
+            6 => edit_list(
+                prompter,
+                &step_label(6, "repos"),
+                &mut config.repos,
+                remote_label,
+                ask_remote,
+            )?,
+            7 => {
+                edit_list(prompter, &step_label(7, "copy"), &mut config.copy, copy_label, ask_copy)?
+            }
+            _ => edit_list(
+                prompter,
+                &step_label(8, "setup"),
+                &mut config.setup,
+                |command| command.clone(),
+                ask_setup,
+            )?,
+        };
+        if forward {
+            step += 1;
+        } else if step == 1 {
+            return Err(abort());
+        } else {
+            step -= 1;
+        }
+    }
     config.validate()?;
+    if !prompter.confirm(&format!("write {}?", path.display()), true)? {
+        return Err(abort());
+    }
     config.save(path)?;
     Ok(())
 }
@@ -372,7 +468,8 @@ pub fn set_config_field(
             anyhow::bail!("no terminal to ask for a value; use `--set {name}=<value>`");
         }
         loop {
-            let value = prompted_with_help(prompter, name, "", field.help)?;
+            let answer = prompted_with_help(prompter, name, "", field.help)?;
+            let value = answer.ok_or_else(abort)?;
             match (field.set)(&mut config, &value) {
                 Ok(()) => break,
                 Err(err) => tracing::warn!("{err}"),
@@ -414,76 +511,91 @@ fn count(entries: usize) -> String {
     }
 }
 
-/// Menu for one list field: add, remove, back.
+/// Menu for one list field: add, remove, back. `false` means Esc went back a
+/// step, `true` that the user left through `← back`.
 fn edit_list<T>(
     prompter: &mut dyn Prompter,
     title: &str,
     items: &mut Vec<T>,
     label: impl Fn(&T) -> String,
     ask: impl Fn(&mut dyn Prompter) -> anyhow::Result<Option<T>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     loop {
         let mut entries = vec![format!("+ add {title}")];
         entries.extend(items.iter().map(&label));
         entries.push("← back".to_string());
         let Some(choice) = prompter.select(title, &entries)? else {
-            return Err(abort());
+            return Ok(false);
         };
         if choice == 0 {
             if let Some(entry) = ask(prompter)? {
                 items.push(entry);
             }
         } else if choice == entries.len() - 1 {
-            return Ok(());
+            return Ok(true);
         } else {
             items.remove(choice - 1);
         }
     }
 }
 
+/// One scalar prompt; `label` is the prompt and carries the wizard step.
+/// Returns false when Esc went back a step, so the caller keeps the old value.
 fn edit_scalar(
     prompter: &mut dyn Prompter,
     config: &mut Config,
     field: &'static ScalarField,
-) -> anyhow::Result<()> {
+    label: &str,
+) -> anyhow::Result<bool> {
     let current = (field.value)(config);
     loop {
-        let answer = prompted_with_help(prompter, field.name, &current, field.help)?;
+        let Some(answer) = prompted_with_help(prompter, label, &current, field.help)? else {
+            return Ok(false);
+        };
         let value = if answer.is_empty() { &current } else { &answer };
         match (field.set)(config, value) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(true),
             Err(err) => tracing::warn!("{err}"),
         }
     }
 }
 
+/// `None` means Esc: no entry, back to the list.
 fn ask_dir(prompter: &mut dyn Prompter) -> anyhow::Result<Option<PathBuf>> {
     let answer = prompted(prompter, "repo dir", "")?;
-    Ok((!answer.is_empty()).then(|| PathBuf::from(answer)))
+    Ok(answer.filter(|answer| !answer.is_empty()).map(PathBuf::from))
 }
 
 fn ask_remote(prompter: &mut dyn Prompter) -> anyhow::Result<Option<RemoteRepo>> {
-    let url = prompted(prompter, "repo url", "")?;
+    let Some(url) = prompted(prompter, "repo url", "")? else {
+        return Ok(None);
+    };
     if url.is_empty() {
         return Ok(None);
     }
-    let name = prompted(prompter, "name (empty = from url)", "")?;
+    let Some(name) = prompted(prompter, "name (empty = from url)", "")? else {
+        return Ok(None);
+    };
     Ok(Some(RemoteRepo { url, name: (!name.is_empty()).then_some(name) }))
 }
 
 fn ask_copy(prompter: &mut dyn Prompter) -> anyhow::Result<Option<CopySpec>> {
-    let from = prompted(prompter, "from", "")?;
+    let Some(from) = prompted(prompter, "from", "")? else {
+        return Ok(None);
+    };
     if from.is_empty() {
         return Ok(None);
     }
-    let to = prompted(prompter, "to (empty = file name)", "")?;
+    let Some(to) = prompted(prompter, "to (empty = file name)", "")? else {
+        return Ok(None);
+    };
     let to = (!to.is_empty()).then(|| PathBuf::from(to));
     Ok(Some(CopySpec { from: PathBuf::from(from), to }))
 }
 
 fn ask_setup(prompter: &mut dyn Prompter) -> anyhow::Result<Option<String>> {
     let command = prompted(prompter, "command", "")?;
-    Ok((!command.is_empty()).then_some(command))
+    Ok(command.filter(|command| !command.is_empty()))
 }
 
 fn remote_label(repo: &RemoteRepo) -> String {
@@ -501,18 +613,21 @@ fn copy_label(copy: &CopySpec) -> String {
     }
 }
 
-fn prompted(prompter: &mut dyn Prompter, prompt: &str, initial: &str) -> anyhow::Result<String> {
-    prompted_with_help(prompter, prompt, initial, INPUT_HELP)
+fn prompted(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    default: &str,
+) -> anyhow::Result<Option<String>> {
+    prompted_with_help(prompter, prompt, default, LIST_INPUT_HELP)
 }
 
 fn prompted_with_help(
     prompter: &mut dyn Prompter,
     prompt: &str,
-    initial: &str,
+    default: &str,
     help: &str,
-) -> anyhow::Result<String> {
-    let answer = prompter.input(prompt, initial, help)?.ok_or_else(abort)?;
-    Ok(answer.trim().to_string())
+) -> anyhow::Result<Option<String>> {
+    Ok(prompter.input(prompt, default, help)?.map(|answer| answer.trim().to_string()))
 }
 
 fn path_text(path: &Path) -> String {
@@ -550,6 +665,7 @@ mod tests {
         Input(String),
         Select(usize),
         Multi(Vec<usize>),
+        Confirm(bool),
         Abort,
     }
 
@@ -559,11 +675,17 @@ mod tests {
         answers: VecDeque<Answer>,
         prompts: Vec<String>,
         help_messages: Vec<String>,
+        defaults: Vec<String>,
     }
 
     impl Script {
         fn new(answers: Vec<Answer>) -> Script {
-            Script { answers: answers.into(), prompts: Vec::new(), help_messages: Vec::new() }
+            Script {
+                answers: answers.into(),
+                prompts: Vec::new(),
+                help_messages: Vec::new(),
+                defaults: Vec::new(),
+            }
         }
 
         fn next(&mut self, prompt: &str) -> Answer {
@@ -576,10 +698,11 @@ mod tests {
         fn input(
             &mut self,
             prompt: &str,
-            _initial: &str,
+            default: &str,
             help: &str,
         ) -> anyhow::Result<Option<String>> {
             self.help_messages.push(help.to_string());
+            self.defaults.push(default.to_string());
             match self.next(prompt) {
                 Answer::Input(value) => Ok(Some(value)),
                 Answer::Abort => Ok(None),
@@ -592,6 +715,13 @@ mod tests {
                 Answer::Select(index) => Ok(Some(index)),
                 Answer::Abort => Ok(None),
                 _ => panic!("scripted answer is not a select"),
+            }
+        }
+
+        fn confirm(&mut self, prompt: &str, _default: bool) -> anyhow::Result<bool> {
+            match self.next(prompt) {
+                Answer::Confirm(answer) => Ok(answer),
+                _ => panic!("scripted answer is not a confirm"),
             }
         }
 
@@ -628,12 +758,13 @@ mod tests {
     }
 
     #[test]
-    fn cancel_and_interrupt_are_aborts() {
+    fn esc_goes_back_but_ctrl_c_aborts() {
         let cancelled_answer: Result<Option<u8>, InquireError> =
             Err(InquireError::OperationCanceled);
         assert_eq!(cancelled(cancelled_answer).expect("cancel"), None);
         let interrupted: Result<Option<u8>, InquireError> = Err(InquireError::OperationInterrupted);
-        assert_eq!(cancelled(interrupted).expect("interrupt"), None);
+        let err = cancelled(interrupted).expect_err("interrupt");
+        assert!(err.to_string().contains("interrupted"), "{err}");
     }
 
     #[test]
@@ -818,19 +949,19 @@ mod tests {
         let work = tmp.path().join("tickets");
         let code = tmp.path().join("code");
         let mut script = Script::new(vec![
-            Answer::Input(String::new()), // work_dir is required
             Answer::Input(work.to_str().expect("utf8").into()), // work_dir
-            Answer::Input(String::new()), // branch_template: default
-            Answer::Input("main".into()), // base
-            Answer::Select(0),            // repo_dirs: add
+            Answer::Input(String::new()),                       // branch_template: default
+            Answer::Input("main".into()),                       // base
+            Answer::Select(0),                                  // repo_dirs: add
             Answer::Input(code.to_str().expect("utf8").into()), // repo dir
-            Answer::Select(2),            // repo_dirs: back
-            Answer::Input(String::new()), // clone_dir: default
-            Answer::Select(1),            // repos: back
-            Answer::Select(1),            // copy: back
-            Answer::Select(0),            // setup: add
+            Answer::Select(2),                                  // repo_dirs: back
+            Answer::Input(String::new()),                       // clone_dir: default
+            Answer::Select(1),                                  // repos: back
+            Answer::Select(1),                                  // copy: back
+            Answer::Select(0),                                  // setup: add
             Answer::Input("npm install".into()),
-            Answer::Select(2), // setup: back
+            Answer::Select(2),     // setup: back
+            Answer::Confirm(true), // write?
         ]);
         new_config(&path, &mut script).expect("new config");
         assert!(script.help_messages.contains(&WORK_DIR.help.to_string()));
@@ -875,5 +1006,150 @@ mod tests {
         let err = new_config(&path, &mut script).expect_err("abort");
         assert!(err.to_string().contains("aborted"), "{err}");
         assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn esc_in_a_field_keeps_the_value_and_returns_to_the_menu() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, mut config) = config_file(tmp.path());
+        let before = config.work_dir.clone();
+        let mut script = Script::new(vec![
+            Answer::Select(0), // work_dir
+            Answer::Abort,     // esc in the field
+            Answer::Select(8), // exit
+        ]);
+        edit_config(&mut config, &path, &mut script).expect("edit");
+        assert_eq!(config.work_dir, before);
+        assert_eq!(script.prompts[2], format!("Config · {}", path.display()));
+    }
+
+    #[test]
+    fn esc_in_the_editor_menu_leaves_without_an_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, mut config) = config_file(tmp.path());
+        let mut script = Script::new(vec![Answer::Abort]);
+        edit_config(&mut config, &path, &mut script).expect("esc leaves the editor");
+    }
+
+    #[test]
+    fn esc_in_the_wizard_goes_back_one_step() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let work = tmp.path().join("tickets");
+        let code = tmp.path().join("code");
+        let mut script = Script::new(vec![
+            Answer::Input(work.to_str().expect("utf8").into()), // work_dir
+            Answer::Input(String::new()),                       // branch_template
+            Answer::Abort,                                      // esc in base: back
+            Answer::Input(String::new()),                       // branch_template again
+            Answer::Input(String::new()),                       // base
+            Answer::Select(0),                                  // repo_dirs: add
+            Answer::Input(code.to_str().expect("utf8").into()),
+            Answer::Select(2),            // repo_dirs: back
+            Answer::Input(String::new()), // clone_dir
+            Answer::Select(1),            // repos: back
+            Answer::Select(1),            // copy: back
+            Answer::Select(1),            // setup: back
+            Answer::Confirm(true),        // write
+        ]);
+        new_config(&path, &mut script).expect("wizard");
+        let reloaded = Config::load(Some(&path)).expect("reload");
+        assert_eq!(reloaded.work_dir, work);
+        assert_eq!(reloaded.repo_dirs, vec![code]);
+        assert_eq!(script.prompts[2], "[3/8] base");
+        assert_eq!(script.prompts[3], "[2/8] branch_template", "esc went back one step");
+        assert_eq!(script.prompts[4], "[3/8] base");
+    }
+
+    #[test]
+    fn esc_in_the_first_wizard_step_aborts() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let mut script = Script::new(vec![Answer::Abort]);
+        let err = new_config(&path, &mut script).expect_err("abort");
+        assert!(err.to_string().contains("aborted"), "{err}");
+        assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn no_at_the_final_question_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let work = tmp.path().join("tickets");
+        let code = tmp.path().join("code");
+        let mut script = Script::new(vec![
+            Answer::Input(work.to_str().expect("utf8").into()), // work_dir
+            Answer::Input(String::new()),                       // branch_template
+            Answer::Input(String::new()),                       // base
+            Answer::Select(0),                                  // repo_dirs: add
+            Answer::Input(code.to_str().expect("utf8").into()),
+            Answer::Select(2),            // repo_dirs: back
+            Answer::Input(String::new()), // clone_dir
+            Answer::Select(1),            // repos: back
+            Answer::Select(1),            // copy: back
+            Answer::Select(1),            // setup: back
+            Answer::Confirm(false),       // do not write
+        ]);
+        let err = new_config(&path, &mut script).expect_err("declined");
+        assert!(err.to_string().contains("aborted"), "{err}");
+        assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn wizard_defaults_show_the_existing_values() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, _) = config_file(tmp.path());
+        let before = Config::load(Some(&path)).expect("load");
+        let mut script = Script::new(vec![
+            Answer::Input(before.work_dir.to_str().expect("utf8").into()),
+            Answer::Input(String::new()),
+            Answer::Input(String::new()),
+            Answer::Select(2), // repo_dirs: back, keep the entry
+            Answer::Input(String::new()),
+            Answer::Select(1), // repos
+            Answer::Select(1), // copy
+            Answer::Select(1), // setup
+            Answer::Confirm(true),
+        ]);
+        new_config(&path, &mut script).expect("wizard");
+        assert!(script.defaults.contains(&before.branch_template));
+        let reloaded = Config::load(Some(&path)).expect("reload");
+        assert_eq!(reloaded.branch_template, before.branch_template);
+        assert_eq!(reloaded.repo_dirs, before.repo_dirs);
+    }
+
+    #[test]
+    fn ctrl_c_in_the_wizard_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        let mut script = Script::new(vec![Answer::Abort]);
+        let err = new_config(&path, &mut script).expect_err("abort");
+        assert!(err.to_string().contains("aborted"), "{err}");
+        assert!(!path.exists(), "nothing written");
+    }
+
+    #[test]
+    fn a_broken_existing_file_starts_the_wizard_from_the_defaults() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.yaml");
+        fs::write(&path, "work_dir: [oops\n").expect("broken config");
+        let work = tmp.path().join("tickets");
+        let code = tmp.path().join("code");
+        let mut script = Script::new(vec![
+            Answer::Input(work.to_str().expect("utf8").into()), // work_dir
+            Answer::Input(String::new()),                       // branch_template: default
+            Answer::Input(String::new()),                       // base: default
+            Answer::Select(0),                                  // repo_dirs: add
+            Answer::Input(code.to_str().expect("utf8").into()),
+            Answer::Select(2),            // repo_dirs: back
+            Answer::Input(String::new()), // clone_dir: default
+            Answer::Select(1),            // repos: back
+            Answer::Select(1),            // copy: back
+            Answer::Select(1),            // setup: back
+            Answer::Confirm(true),        // write
+        ]);
+        new_config(&path, &mut script).expect("wizard");
+        assert_eq!(script.defaults[1], "ticket/{ticket}", "defaults, not the broken file");
+        assert_eq!(Config::load(Some(&path)).expect("reload").base, "HEAD");
     }
 }

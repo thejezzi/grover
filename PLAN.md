@@ -1,8 +1,8 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.6 umgesetzt, `make check` grün (92 Tests). Abschnitt 12
-ist die priorisierte Liste der nächsten Features; 12.5, 12.7 und 12.8 bekommen vor dem Code
-ein Go.
+Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, `make check` grün (100 Tests). Abschnitt 12
+ist die priorisierte Liste der nächsten Features; 12.5 und 12.8 bekommen vor dem Code ein
+Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -288,6 +288,7 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.3 `grover status`: Branch, Upstream, dirty, Tabelle (81 Tests)
 - [x] 12.4 Setup-Befehle nach Worktree-Erstellung (85 Tests)
 - [x] 12.6 `--set`, Feldhilfe in Editor und Wizard (92 Tests)
+- [x] 12.7 Esc als „zurück“, Defaults, Schritt-Zähler, Schlussfrage (100 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -351,9 +352,9 @@ Menü mit allen Top-Level-Feldern und ihrem aktuellen Wert:
   beim Speichern verloren (Entscheidung 12).
 - `--path` bleibt (Fundort), neu `--show` (aufgelöste Config, bisheriges Verhalten des
   nackten `config`). Ohne TTY und ohne Flag: Fehler mit Hinweis auf `--show`.
-- Abbruch: `Esc` und `Ctrl-C` brechen jeden Prompt ab, Exit 1, nichts geschrieben;
-  „exit“ im Menü ist Exit 0. Prompt-Texte sind englisch wie der Rest der CLI. `Esc` als
-  „eine Ebene zurück“ und der Default statt Vorbelegung kommen mit 12.7.
+- Abbruch: `Ctrl-C` bricht jeden Prompt ab, Exit 1, nichts geschrieben; „exit“ im Menü ist
+  Exit 0. Prompt-Texte sind englisch wie der Rest der CLI. `Esc` heißt seit 12.7 „eine
+  Ebene zurück“, der alte Wert steht als Default statt als Vorbelegung.
 
 ### 11.3 `grover new` ohne Argumente
 
@@ -375,13 +376,13 @@ $ grover new
 
 ## 12. Roadmap (in dieser Reihenfolge)
 
-Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.4 und 12.6 sind
-umgesetzt; 12.5, 12.7 und 12.8 bekommen jeweils vor dem Code ihr Go. Die Tests aus
-Abschnitt 8 gelten mit. 12.9 ist Backlog, 12.10 ist die Absage.
+Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.4, 12.6 und 12.7 sind
+umgesetzt; 12.5 und 12.8 bekommen jeweils vor dem Code ihr Go. Die Tests aus Abschnitt 8
+gelten mit. 12.9 ist Backlog, 12.10 ist die Absage.
 
 12.5–12.7 sind ein Paket (Bequemlichkeit des Wizards) und fassen dieselbe `Prompter`-API
 an; gebaut werden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
-vorigen aufsetzt. 12.6 ist umgesetzt, als nächstes folgt 12.7.
+vorigen aufsetzt. 12.6 und 12.7 sind umgesetzt, als nächstes folgt 12.5.
 
 ### 12.1 `grover rm [<ticket>]` — aufräumen (umgesetzt)
 
@@ -541,7 +542,7 @@ macht, steht nur in dieser Datei. Und wer einen Wert ändern will, klickt sich d
 - Tests: `--set base` ändert nur `base`; unbekanntes Feld ist ein Fehler mit Kandidaten;
   `--set` ohne Datei ist ein Fehler; jeder Name in `FIELDS` ist ein echtes Config-Feld.
 
-### 12.7 Besserer Wizard für `--init` und den Editor
+### 12.7 Besserer Wizard für `--init` und den Editor (umgesetzt)
 
 Zwei echte Defekte und fehlende Bequemlichkeit. Was `inquire` 0.9.4 hergibt (im Quelltext
 geprüft): Esc kommt als `OperationCanceled` an, Ctrl-C als `OperationInterrupted`;
@@ -566,7 +567,7 @@ geprüft): Esc kommt als `OperationCanceled` an, Ctrl-C als `OperationInterrupte
 - Editor: Esc in einem Feld-Prompt führt zurück ins Menü, der alte Wert bleibt; Esc im Menü
   beendet den Editor mit Exit 0 (jedes Feld schreibt weiterhin sofort, Entscheidung 12).
   Listen-Untermenüs behalten `← back`.
-- `--init` wird eine numerierte Kette (`[2/7] base`): Esc im Feld geht zum vorigen Feld und
+- `--init` wird eine numerierte Kette (`[2/8] base`): Esc im Feld geht zum vorigen Feld und
   behält den getippten Wert, Esc im ersten Feld bricht ab. Den Schritt-Zähler liefert der
   Index, den der Navigator ohnehin braucht.
 - Letzter Schritt ist ein `Confirm` „write <pfad>?“. Bis dahin ist nichts geschrieben; ein

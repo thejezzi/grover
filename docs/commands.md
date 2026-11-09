@@ -58,15 +58,18 @@ behind every interactive behavior in `grover`, and it is why the same command li
 in both worlds.
 
 Prompts are rendered on stderr, so stdout keeps carrying only the result. In a text prompt,
-Enter confirms and Esc cancels. In a single selection, typing filters the entries, the up
-and down arrows move, Enter confirms and Esc cancels. In a multi-selection, typing filters
-too, Space toggles the entry under the cursor, the right arrow selects all entries, the left
-arrow selects none, and Enter confirms the selection.
+Enter confirms and Esc goes back; the default value, when there is one, is shown in grey and
+is used when you press Enter without typing. In a single selection, typing filters the
+entries, the up and down arrows move, Enter confirms and Esc goes back. In a multi-selection,
+typing filters too, Space toggles the entry under the cursor, the right arrow selects all
+entries, the left arrow selects none, and Enter confirms the selection.
 
-Cancelling a prompt with Esc or Ctrl-C aborts the command with exit code 1. For `new` and
+Esc means "one step back": in the config editor it returns from a field to the menu and from
+the menu to the shell, in the `--init` wizard it returns to the previous field and keeps the
+answer you typed. Ctrl-C is different: it aborts the command with exit code 1. For `new` and
 `rm` nothing has been written at that point, and the error text says `aborted, nothing
-written`. The config editor is the exception: it saves after every action, so cancelling a
-prompt keeps the actions you already confirmed.
+written`. The config editor saves after every action, so Ctrl-C there keeps the actions you
+already confirmed.
 
 ## grover new
 
@@ -354,15 +357,18 @@ form and the defaults filled in. It is the mode for scripts and for answering "w
 it prompts on a terminal; an empty value clears `clone_dir`. List fields remain in the
 editor. The config file must already exist.
 
-`--init` is the wizard: it asks for `work_dir` first, repeating until a non-empty answer
-arrives, then for `branch_template` and `base` with defaults pre-filled, then for
-`repo_dirs` (a list), `clone_dir`, and the `repos`, `copy` and `setup` lists. An empty
-answer keeps the shown default; choosing the back entry leaves a list as it is. The
-target is `--config` when given, else an existing config, else the `dirs` config path,
-which is `$XDG_CONFIG_HOME/grover/config.yaml` on Linux. An existing file is refused unless
-`--force` is given. The file is written only after the whole config has been validated, so
-Esc, Ctrl-C or an invalid value leaves no new file behind and keeps an existing one
-untouched.
+`--init` is the wizard: it numbers its steps (`[2/8] branch_template`), asks for `work_dir`
+first and keeps asking until a non-empty answer arrives, then for `branch_template`, `base`,
+`repo_dirs` (a list), `clone_dir`, and the `repos`, `copy` and `setup` lists. Existing values
+are shown as grey defaults: Enter keeps them, typing replaces them. Esc in a field goes back
+to the previous field and keeps what you typed; Esc in the first field aborts. The target is
+`--config` when given, else an existing config, else the `dirs` config path, which is
+`$XDG_CONFIG_HOME/grover/config.yaml` on Linux. An existing file is refused unless `--force`
+is given; with `--force` a loadable file pre-fills every default, and a broken one produces a
+warning and starts from the defaults.
+
+The last step is `write <path>?`. Nothing is written before it, so Esc, Ctrl-C or a "no"
+there leaves no new file behind and keeps an existing one untouched.
 
 The editor and the wizard both need a terminal. Without one, the editor fails with a hint
 to use `--show`, and the wizard fails and names the file it would have written. If no

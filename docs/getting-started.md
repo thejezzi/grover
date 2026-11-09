@@ -50,12 +50,13 @@ The wizard asks for one value at a time, in this order: `work_dir`,
 `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy` and
 `setup`. `work_dir` is the only value without a default: it is the folder
 where ticket folders will be created, for example `/home/you/work/tickets`.
-The other questions show their defaults and accept them with Enter.
+The other questions show their defaults in grey and accept them with Enter;
+typing replaces them. Esc goes back one field and keeps your answer.
 The four lists (`repo_dirs`, `repos`, `copy`, `setup`) are menus: choose
 `+ add` to append a value, then leave through the back entry. `setup` commands
 run in order after each new worktree. Their output goes to stderr, so stdout
-stays the ticket path. Nothing is written until every answer passes validation,
-so cancellation leaves no half-finished file behind.
+stays the ticket path. The last question is `write <path>?`; nothing is written
+before it, so declining leaves no half-finished file behind.
 
 If you prefer to write the file yourself, put this in `~/.config/grover/config.yaml` (or in
 `./grover.yaml` next to your work):

@@ -267,10 +267,11 @@ is a menu, and it looks like this:
 ```
 
 The third column is the one-sentence help that the field also shows under its prompt.
-Choosing a scalar field asks for a new value with the old one pre-filled; an empty answer
-keeps it. Choosing a list opens a small submenu with the entries, an entry for adding one,
-and an entry for going back; picking an existing entry removes it. There is no in-place edit
-of a list entry, only add and remove.
+Choosing a scalar field asks for a new value: the current one is shown in grey as the
+default, Enter keeps it, typing replaces it. Esc in a field returns to the menu without
+changing anything, and Esc in the menu leaves the editor. Choosing a list opens a small
+submenu with the entries, an entry for adding one, and an entry for going back; picking an
+existing entry removes it. There is no in-place edit of a list entry, only add and remove.
 
 The editor writes after every menu action, so leaving the menu is not a commit step. Before
 each write the new state is validated by writing it and reading it back; if anything is
@@ -284,12 +285,13 @@ YAML, so comments in the file are lost. If you keep the config in a dotfiles rep
 share it with a team, edit it in your editor and use the interactive one only for quick
 changes.
 
-`grover config --init` is the other direction: it starts from nothing, asks each field in
-turn, including the `setup` command list, and writes the result. It never modifies an
-existing config unless you pass `--force`.
-Like the editor, it needs a terminal; without one it fails and names the file it would have
-written. An interrupted or invalid wizard leaves no new file behind and keeps an existing
-one untouched, because the file is written only after the whole config has been validated.
+`grover config --init` is the other direction: it starts from nothing, asks each numbered
+field in turn, including the `setup` command list, and writes the result only after a final
+`write <path>?` question. It never modifies an existing config unless you pass `--force`;
+with `--force` a loadable existing config pre-fills the defaults. Esc goes back one field and
+keeps what you typed. Like the editor, it needs a terminal; without one it fails and names
+the file it would have written. A declined final question or an invalid value leaves no new
+file behind and keeps an existing one untouched.
 
 For one change there is `grover config --set <field>[=<value>]`, which edits a single scalar
 field and writes the file without opening the editor. Without `=<value>` it prompts on a
