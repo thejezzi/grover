@@ -83,6 +83,7 @@ misspelled key inside a `repos` or `copy` entry.
 | `clone_dir` | path | `~/.grover/repos` | no |
 | `repos` | list of entries | empty | no |
 | `copy` | list of entries | empty | no |
+| `setup` | list of shell commands | empty | no |
 
 `work_dir` is the only field without a default, and it plus at least one of `repo_dirs` or
 `repos` must be present, or the config does not pass validation.
@@ -180,6 +181,24 @@ Copying targets the ticket folder, not the individual worktrees. A copy target t
 exists is skipped, never overwritten. Directories are not copied, and a `from` that does not
 exist fails when the copy is attempted, after the worktrees have been created.
 
+### setup
+
+`setup` is an optional list of shell commands run with `sh -c` after each new worktree is
+created. Commands run in order, with the worktree as the current directory. Their stdout is
+sent to grover's stderr, while their stderr is inherited. `GROVER_REPO` is the repo name and
+`GROVER_TICKET` is the normalized ticket
+slug. Existing worktrees and files copied into the ticket folder do not trigger setup.
+
+A failed command prints a warning with its exit status; later commands still run, and the
+worktree is kept. `--dry-run` logs the commands without running them, so do not put secrets
+in command strings. Commands run with your permissions. Only use setup entries from
+a config you trust.
+
+```yaml
+setup:
+  - "npm install"
+```
+
 ## A complete example
 
 ```yaml
@@ -210,6 +229,10 @@ repos:
 copy:
   - from: "~/templates/AGENTS.md"
     to: AGENTS.md
+
+# Commands run after each new worktree is created.
+setup:
+  - "npm install"
 ```
 
 A minimal config is much shorter; the only non-negotiable part is `work_dir` plus at least
@@ -239,6 +262,7 @@ is a menu, and it looks like this:
   clone_dir         /home/you/.grover/repos
   repos             0 entries
   copy              1 entry
+  setup             0 entries
   ← exit
 ```
 
@@ -260,7 +284,8 @@ share it with a team, edit it in your editor and use the interactive one only fo
 changes.
 
 `grover config --init` is the other direction: it starts from nothing, asks each field in
-turn and writes the result. It never modifies an existing config unless you pass `--force`.
+turn, including the `setup` command list, and writes the result. It never modifies an
+existing config unless you pass `--force`.
 Like the editor, it needs a terminal; without one it fails and names the file it would have
 written. An interrupted or invalid wizard leaves no new file behind and keeps an existing
 one untouched, because the file is written only after the whole config has been validated.

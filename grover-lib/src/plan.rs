@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use crate::config::{Config, CopySpec};
 use crate::error::{Error, Result};
@@ -21,8 +22,10 @@ pub struct Request {
 #[derive(Debug)]
 pub struct Plan {
     pub ticket_dir: PathBuf,
+    pub ticket: String,
     pub branch: String,
     pub base: String,
+    pub setup: Vec<String>,
     pub worktrees: Vec<Worktree>,
     pub copies: Vec<Copy>,
 }
@@ -66,7 +69,15 @@ impl Plan {
             .iter()
             .map(|spec| copy_target(&ticket_dir, spec))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Plan { ticket_dir, branch, base: config.base.clone(), worktrees, copies })
+        Ok(Plan {
+            ticket_dir,
+            ticket: slug,
+            branch,
+            base: config.base.clone(),
+            setup: config.setup.clone(),
+            worktrees,
+            copies,
+        })
     }
 
     /// Create, skip what exists; `dry_run` writes nothing.
@@ -118,11 +129,51 @@ impl Plan {
         }
         let path = worktree.path.display();
         tracing::info!("worktree {} ({}) in {path}", worktree.repo.name, self.branch);
-        if !dry_run {
+        if dry_run {
+            for command in &self.setup {
+                tracing::info!("would run setup in {path}: {command}");
+            }
+        } else {
             git::worktree_add(&worktree.repo.path, &worktree.path, &self.branch, &self.base)?;
+            self.run_setup(worktree);
         }
         report.created.push(worktree.path.clone());
         Ok(())
+    }
+
+    fn run_setup(&self, worktree: &Worktree) {
+        for (index, command) in self.setup.iter().enumerate() {
+            tracing::info!(
+                "running setup command {}/{} for repo {}",
+                index + 1,
+                self.setup.len(),
+                worktree.repo.name
+            );
+            // Keep the ticket path as the only stdout line from `new`.
+            let script = format!("exec 1>&2\n{command}");
+            let result = Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .current_dir(&worktree.path)
+                .env("GROVER_REPO", &worktree.repo.name)
+                .env("GROVER_TICKET", &self.ticket)
+                .status();
+            match result {
+                Ok(status) if status.success() => {}
+                Ok(status) => tracing::warn!(
+                    "setup command {}/{} for repo {} failed ({status})",
+                    index + 1,
+                    self.setup.len(),
+                    worktree.repo.name
+                ),
+                Err(err) => tracing::warn!(
+                    "could not start setup command {}/{} for repo {}: {err}",
+                    index + 1,
+                    self.setup.len(),
+                    worktree.repo.name
+                ),
+            }
+        }
     }
 
     fn ensure_copy(copy: &Copy, dry_run: bool, report: &mut Report) -> Result<()> {

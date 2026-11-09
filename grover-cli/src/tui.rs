@@ -187,6 +187,7 @@ enum Field {
     CloneDir,
     Repos,
     Copy,
+    Setup,
     Exit,
 }
 
@@ -223,6 +224,13 @@ pub fn edit_config(
                 edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?
             }
             Field::Copy => edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?,
+            Field::Setup => edit_list(
+                prompter,
+                "setup",
+                &mut config.setup,
+                |command| command.clone(),
+                ask_setup,
+            )?,
             Field::Exit => return Ok(()),
         }
         if let Err(err) = save_and_reload(config, path) {
@@ -241,6 +249,7 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
     edit_optional_path(prompter, "clone_dir", &mut config.clone_dir)?;
     edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
     edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
+    edit_list(prompter, "setup", &mut config.setup, |command| command.clone(), ask_setup)?;
     config.validate()?;
     config.save(path)?;
     Ok(())
@@ -274,6 +283,7 @@ fn menu(config: &Config) -> Vec<(Field, String)> {
         ),
         (Field::Repos, format!("{:<18}{}", "repos", count(config.repos.len()))),
         (Field::Copy, format!("{:<18}{}", "copy", count(config.copy.len()))),
+        (Field::Setup, format!("{:<18}{}", "setup", count(config.setup.len()))),
         (Field::Exit, "← exit".to_string()),
     ]
 }
@@ -360,6 +370,11 @@ fn ask_copy(prompter: &mut dyn Prompter) -> anyhow::Result<Option<CopySpec>> {
     let to = prompted(prompter, "to (empty = file name)", "")?;
     let to = (!to.is_empty()).then(|| PathBuf::from(to));
     Ok(Some(CopySpec { from: PathBuf::from(from), to }))
+}
+
+fn ask_setup(prompter: &mut dyn Prompter) -> anyhow::Result<Option<String>> {
+    let command = prompted(prompter, "command", "")?;
+    Ok((!command.is_empty()).then_some(command))
 }
 
 fn remote_label(repo: &RemoteRepo) -> String {
@@ -601,7 +616,7 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(0),
             Answer::Input(elsewhere.to_str().expect("utf8").into()),
-            Answer::Select(7),
+            Answer::Select(8),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.work_dir, elsewhere);
@@ -617,7 +632,7 @@ mod tests {
         let mut script = Script::new(vec![
             Answer::Select(1),
             Answer::Input("feature".into()),
-            Answer::Select(7),
+            Answer::Select(8),
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         assert_eq!(config.branch_template, "ticket/{ticket}");
@@ -635,11 +650,27 @@ mod tests {
             Answer::Input(added.to_str().expect("utf8").into()), // entry
             Answer::Select(1),                                   // remove the first entry
             Answer::Select(2),                                   // back
-            Answer::Select(7),                                   // exit
+            Answer::Select(8),                                   // exit
         ]);
         edit_config(&mut config, &path, &mut script).expect("edit");
         let reloaded = Config::load(Some(&path)).expect("reload");
         assert_eq!(reloaded.repo_dirs, vec![added]);
+    }
+
+    #[test]
+    fn setup_commands_can_be_added_in_the_editor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, mut config) = config_file(tmp.path());
+        let mut script = Script::new(vec![
+            Answer::Select(7),
+            Answer::Select(0),
+            Answer::Input("npm install".into()),
+            Answer::Select(2),
+            Answer::Select(8),
+        ]);
+        edit_config(&mut config, &path, &mut script).expect("edit");
+        assert_eq!(config.setup, ["npm install"]);
+        assert_eq!(Config::load(Some(&path)).expect("reload").setup, ["npm install"]);
     }
 
     #[test]
@@ -659,6 +690,9 @@ mod tests {
             Answer::Input(String::new()), // clone_dir: default
             Answer::Select(1),            // repos: back
             Answer::Select(1),            // copy: back
+            Answer::Select(0),            // setup: add
+            Answer::Input("npm install".into()),
+            Answer::Select(2), // setup: back
         ]);
         new_config(&path, &mut script).expect("new config");
 
@@ -668,6 +702,7 @@ mod tests {
         assert_eq!(reloaded.base, "main");
         assert_eq!(reloaded.repo_dirs, vec![code]);
         assert!(reloaded.repos.is_empty());
+        assert_eq!(reloaded.setup, ["npm install"]);
         let written = fs::read_to_string(&path).expect("read");
         assert!(!written.contains("repos:"), "empty lists are left out: {written}");
     }
@@ -685,6 +720,7 @@ mod tests {
             Answer::Input(String::new()),                       // clone_dir
             Answer::Select(1),                                  // repos: back, skip
             Answer::Select(1),                                  // copy: back
+            Answer::Select(1),                                  // setup: back
         ]);
         let err = new_config(&path, &mut script).expect_err("no repo source");
         assert!(err.to_string().contains("repo_dirs"), "{err}");

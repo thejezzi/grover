@@ -95,13 +95,14 @@ than failing.
 Every `new` runs in two phases. First `grover` builds a plan: it parses the ticket, resolves
 the repository selection and computes every target path. This phase writes nothing, so a
 mistyped repository name or an ambiguous selection fails while the disk is still untouched.
-Then it applies the plan: create the folder, clone where needed, add the worktrees, copy the
-files. A base ref is only checked here, when a branch is actually created.
+Then it applies the plan: create the folder, clone where needed, add worktrees, run
+`setup` in each new worktree, then copy files. A base ref is checked only here, when a
+branch is actually created.
 
-Applying is idempotent. Anything that already exists — the ticket folder, a worktree folder,
-a copy target — is skipped with a warning, and the rest of the run continues. Re-running the
-same command therefore repairs a partial run and adds newly selected repositories, without
-overwriting work that is already in place.
+Applying is idempotent. Existing ticket folders, worktree folders and copy targets are
+skipped with a warning, and the rest continues. Setup commands run only for new worktrees.
+Re-running repairs partial runs and adds newly selected repositories without overwriting
+existing work.
 
 `--dry-run` stops after the plan and prints the same progress lines without writing
 anything. The ticket folder path is printed on stdout in a dry run too, so the command

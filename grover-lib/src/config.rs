@@ -32,6 +32,9 @@ pub struct Config {
     /// Files copied into the ticket directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy: Vec<CopySpec>,
+    /// Shell commands run in each newly created worktree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
 }
 
 /// One `repos` entry.
@@ -85,6 +88,7 @@ impl Config {
             clone_dir: default_clone_dir(),
             repos: Vec::new(),
             copy: Vec::new(),
+            setup: Vec::new(),
         }
     }
 
@@ -258,6 +262,8 @@ mod tests {
         assert_eq!(config.base, "HEAD");
         assert_eq!(config.work_dir, tmp.path().join("tickets"));
         assert_eq!(config.repo_dirs, vec![tmp.path().join("code")]);
+        assert!(config.setup.is_empty());
+        assert!(!config.to_yaml().expect("yaml").contains("setup:"));
     }
 
     #[test]
@@ -308,12 +314,14 @@ mod tests {
         let path = write(
             tmp.path(),
             "work_dir: tickets\nrepos:\n  - url: git@github.com:org/api.git\n    name: api\n\
-             copy:\n  - from: tpl/AGENTS.md\n    to: AGENTS.md\n",
+             copy:\n  - from: tpl/AGENTS.md\n    to: AGENTS.md\n\
+             setup:\n  - npm install\n",
         );
         let config = Config::load(Some(&path)).expect("config");
         assert_eq!(config.repos.len(), 1);
         assert_eq!(config.repos[0].resolved_name().as_deref(), Some("api"));
         assert_eq!(config.copy[0].from, tmp.path().join("tpl/AGENTS.md"));
+        assert_eq!(config.setup, ["npm install"]);
     }
 
     #[test]
@@ -326,7 +334,8 @@ mod tests {
     #[test]
     fn save_and_load_round_trip() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let path = write(tmp.path(), "work_dir: tickets\nrepo_dirs: [code]\n");
+        let path =
+            write(tmp.path(), "work_dir: tickets\nrepo_dirs: [code]\nsetup: [npm install]\n");
         let config = Config::load(Some(&path)).expect("config");
         let target = tmp.path().join("out/config.yaml");
         config.save(&target).expect("save");

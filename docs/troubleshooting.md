@@ -36,7 +36,8 @@ A file that exists but does not parse produces the path and the parser's explana
 
 ```text
 /home/you/.config/grover/config.yaml: unknown field `repo_dir`, expected one of
-`work_dir`, `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy`
+`work_dir`, `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`,
+`copy`, `setup`
 at line 2 column 1
 ```
 

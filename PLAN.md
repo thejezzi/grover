@@ -1,7 +1,7 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.3 umgesetzt, `make check` grün (81 Tests). Abschnitt 12
-ist die priorisierte Liste der nächsten Features; jedes davon bekommt vor dem Code ein Go.
+Status: Abschnitte 1–11 und 12.1–12.4 umgesetzt, `make check` grün (85 Tests). Abschnitt 12
+ist die priorisierte Liste der nächsten Features; 12.5–12.8 bekommen vor dem Code ein Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -55,8 +55,8 @@ $ cd "$(grover new PROJ-123 --repo api,web)"
 11. **`config --init` fragt alles ab.** Kein `init`-Subcommand und keine eingebettete
     Vorlage: das Binary steht für sich und schreibt nur Werte, die du eingibst. Ein Wizard
     fragt `work_dir` (Pflicht, kein Default), `branch_template`, `base`, `repo_dirs`,
-    `clone_dir`, `repos`, `copy`; Enter behält den Default, leere Listen landen nicht in
-    der Datei. Geschrieben wird erst nach `Config::validate`; eine vorhandene Datei nur
+    `clone_dir`, `repos`, `copy` und `setup`. Enter behält den Default; leere Listen landen
+    nicht in der Datei. Geschrieben wird erst nach `Config::validate`; eine vorhandene Datei nur
     mit `--force`. Feintuning macht danach `grover config`.
 12. **`config` schreibt sofort.** Jede Änderung geht direkt in die Datei; kein Dirty-State,
     kein Speichern-Schritt. Geschrieben wird über eine Temp-Datei plus `rename`, damit ein
@@ -120,7 +120,7 @@ Tests: `tempfile`.
 Format ist YAML. Fundort: `--config <pfad>`, sonst `./grover.yaml`, sonst
 `$XDG_CONFIG_HOME/grover/config.yaml`. Relative Pfade in der Datei gelten relativ zur
 Datei, `~` ist das Home-Verzeichnis, alles wird intern absolut. Felder, die es noch nicht
-gibt, stehen mit ihrer Zielform in Abschnitt 12 (`setup`, 12.4).
+gibt, stehen mit ihrer Zielform in Abschnitt 12 (`ai` 12.8).
 
 ```yaml
 work_dir: "~/work/tickets"           # Pflicht: hier entstehen die Ticket-Ordner
@@ -137,6 +137,9 @@ repos:                               # Repos, die bei Bedarf geklont werden
 copy:                                # Dateien in den Ticket-Ordner
   - from: "~/templates/AGENTS.md"
     to: AGENTS.md                    # optional, sonst Dateiname
+
+setup:                               # Befehle nach jedem neuen Worktree
+  - "cp .env.example .env"
 ```
 
 `to` ist relativ zum Ticket-Ordner; ein absoluter Pfad ist ein Config-Fehler.
@@ -150,13 +153,14 @@ Dateipfad (Details in Abschnitt 11).
 
 ```text
 grover new [<ticket>] [-r|--repo <name>]... [-a|--all] [-n|--dry-run]
-                      [-c|--config <pfad>]
+                      [-t|--title <text>] [-c|--config <pfad>]
 grover list [-c|--config <pfad>]
 grover rm [<ticket>] [-f|--force] [-n|--dry-run] [-c|--config <pfad>]
 grover path [<ticket>] [-c|--config <pfad>]
 grover status [<ticket>] [-c|--config <pfad>]
 grover config [-c|--config <pfad>] [-p|--path] [-s|--show]
-                     [-i|--init [--force]]
+                     [-i|--init [--force] [--defaults]]
+                     [--set <feld>[=<wert>]]
 grover completions <bash|zsh|fish|...>
 ```
 
@@ -164,6 +168,8 @@ grover completions <bash|zsh|fish|...>
 - `--repo` ist fuzzy, mehrfach oder kommagetrennt; `--all` nimmt alle.
 - Fehlen Ticket, `--repo` und `--all`, fragt `new` nach — aber nur mit TTY (Abschnitt 11.3).
   Ohne TTY bleibt es beim Fehler, es wird nichts angelegt.
+- `--title` beschreibt das Ticket für `ai.branch_name` (12.8); ohne Titel fragt `new` auf
+  einem TTY danach, wenn `ai` konfiguriert ist.
 - `--dry-run` zeigt Plan und Aktionen, ohne zu schreiben.
 - `list` zeigt nur vorhandene Work Items: die Namen der direkten Ticket-Unterordner von
   `work_dir`, alphabetisch sortiert und ohne Zusatzspalten. Dateien werden ignoriert;
@@ -186,12 +192,14 @@ grover completions <bash|zsh|fish|...>
 3. Fehlende Angaben erfragen, nur wenn stdin ein TTY ist: Ticket und/oder Repo-Auswahl
    (Abschnitt 11.3). Ohne TTY: Fehler wie bisher.
 4. Ticket zu Slug normalisieren (nur `[A-Za-z0-9._-]`, keine führenden `-`/`.`), Branch
-   aus `branch_template`, Ticket-Ordner aus `work_dir` + Slug.
+   aus `branch_template` — oder aus `ai.branch_name`, wenn konfiguriert (12.8); bei
+   Fehlschlag bleibt es beim Template. Ticket-Ordner aus `work_dir` + Slug.
 5. Auswahl per Fuzzy auflösen; Plan bauen (`worktrees`, `copies`).
-6. `apply`: Ticket-Ordner anlegen, pro Repo Worktree anlegen (Basis ist der erste dort
-   existierende Ref aus `base`), Dateien kopieren. Vorhandene Pfade werden übersprungen,
-   nicht überschrieben. Alle Pfade sind vor dem git-Aufruf absolut: ein relatives Ziel
-   würde `git -C <repo> worktree add` im Repo anlegen, nicht im Projekt.
+6. `apply`: Ticket-Ordner anlegen, pro Repo einen Worktree auf dem ersten dort
+   existierenden Ref aus `base` anlegen und Setup ausführen; danach Dateien kopieren.
+   Vorhandene Pfade werden übersprungen und nicht überschrieben.
+   Alle Pfade sind vor dem git-Aufruf absolut: Ein relatives Ziel würde
+   `git -C <repo> worktree add` im Repo anlegen, nicht im Projekt.
 
 ## 7. Fehlerfälle und Verhalten
 
@@ -241,18 +249,20 @@ grover completions <bash|zsh|fish|...>
   sortiert und ohne Repo-Informationen; ohne `work_dir` ist die Ausgabe leer.
 - TUI-Pfad von Hand (echtes Terminal oder `script`), weil Prompts ohne TTY nicht sinnvoll
   testbar sind: Ticket eingeben, Repos mehrfach wählen, abbrechen.
-- Für Abschnitt 12 kommen die Fälle aus 12.1 bis 12.4 dazu (dort je Feature gelistet).
+- Für Abschnitt 12 kommen die Fälle aus 12.1 bis 12.8 dazu (dort je Feature gelistet).
 
 ## 9. Non-Goals
 
 - Kein `--json`, keine Fullscreen-TUI (`ratatui`), keine Maus, kein Undo/History.
-- Keine Änderung an `git config`, keine git-Hooks. Setup-Befehle nach dem Anlegen sind
-  geplant (12.4), aber als Config-Liste, nicht als Hook-System.
+- Keine Änderung an `git config` oder generische git-Hooks. Setup-Befehle nach dem
+  Anlegen sind in 12.4 als Config-Liste umgesetzt, nicht als Hook-System.
 - Keine `copy`-Einträge pro Repo (nur Ticket-Root).
 - Kein Mergen und kein Aufräumen ohne Aufforderung; Löschen ist `rm` (12.1), nie implizit.
-  Kein `fetch` im Normallauf, höchstens opt-in (12.5).
+  Kein `fetch` im Normallauf, höchstens opt-in (12.9).
 - Keine Doku-Generierung (Handbuch, Manpage); `README.md` und `docs/` werden von Hand
   gepflegt.
+- Keine eingebaute LLM-Anbindung: Branch-Namen per AI laufen über ein konfiguriertes
+  Kommando (12.8), nicht über einen HTTP-Client im Binary.
 - Keine Kommentar-Erhaltung beim interaktiven Schreiben der Config.
 - Kein Bearbeiten einzelner Listeneinträge (nur hinzufügen und entfernen).
 
@@ -264,7 +274,7 @@ grover completions <bash|zsh|fish|...>
 - [x] `grover-lib`: `config`, `repo`, `git`, `fuzzy`, `plan`, `error`
 - [x] `grover-cli`: `new`, `list`, `config`, `completions`
 - [x] `Makefile`: `build`, `install`, `uninstall`, `check`
-- [x] `grover.yaml.example` und Tests (19 Unit-, 8 Integrationstests)
+- [x] `grover.yaml.example` und Tests (85 Tests)
 - [x] Ponytail-Review: keine offenen Findings (`fmt`, `clippy -D warnings`, `test` grün)
 - [x] `README.md` und `docs/` (Einstieg, Konzepte, Config, Kommandos, Fehlerbehebung)
 - [x] `inquire` + `grover-cli/src/tui.rs` (Prompts, TTY-Wächter, Suchfilter)
@@ -275,6 +285,7 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.1 `grover rm`: Worktrees, Branches, `copy`-Dateien, Ticket-Ordner (69 Tests)
 - [x] 12.2 `grover path`: Argument, Fuzzy, cwd (73 Tests)
 - [x] 12.3 `grover status`: Branch, Upstream, dirty, Tabelle (81 Tests)
+- [x] 12.4 Setup-Befehle nach Worktree-Erstellung (85 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -285,8 +296,9 @@ Vor jedem Prompt steht der TTY-Wächter (`std::io::IsTerminal`), sonst passiert 
 was heute passiert. Prompts nach stderr, Fortschritt weiterhin über `tracing`.
 
 Ein gemeinsames `RenderConfig` macht die Prompts optisch konsistent: `?` für offene und `✓`
-für bestätigte Eingaben, `❯` für die aktive Option, `[✓]` für Mehrfachauswahlen. Cyan markiert
-Fokus und Antworten, Grün Bestätigungen; Hilfen und inaktive Checkboxen sind dunkelgrau.
+für bestätigte Eingaben, `❯` für die aktive Option, `[✓]` für Mehrfachauswahlen. Cyan
+markiert Fokus und Antworten, Grün Bestätigungen; Hilfen und inaktive Checkboxen sind
+dunkelgrau.
 Bis zu zwölf Optionen stehen ohne Blättern untereinander, Werte und Repo-Status sind bündig.
 `NO_COLOR` behält Marker und Layout bei, entfernt aber sämtliche Farben und Attribute.
 
@@ -295,10 +307,11 @@ Bis zu zwölf Optionen stehen ohne Blättern untereinander, Werte und Repo-Statu
 - Ziel: `--config <pfad>`, sonst derselbe Fundort wie beim Lesen
   (`./grover.yaml`, sonst `$XDG_CONFIG_HOME/grover/config.yaml`).
 - Keine Vorlage mehr: das Binary steht für sich, es schreibt nur die Werte, die du
-  eingibst. Leere Listen (`repo_dirs`, `repos`, `copy`) erscheinen nicht im YAML.
+  eingibst. Leere Listen (`repo_dirs`, `repos`, `copy`, `setup`) erscheinen nicht im
+  YAML.
 - Ein Durchlauf, Feld für Feld: `work_dir` (Pflicht, wird bis zur Eingabe wiederholt),
-  `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy`. Enter behält den
-  angezeigten Default, Listen überspringt man über `← back`.
+  `branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy`, `setup`.
+  Enter behält den angezeigten Default, Listen überspringt man über `← back`.
 - Vorhandene Datei: Fehler mit Pfad, außer `--force`.
 - Ohne TTY: Fehler mit dem Zielpfad, nichts geschrieben — kein Hänger in Skripten.
 - Geschrieben wird erst nach `Config::validate`; Abbruch oder Validierungsfehler
@@ -317,24 +330,28 @@ Menü mit allen Top-Level-Feldern und ihrem aktuellen Wert:
   clone_dir         ~/.grover/repos
   repos             2 Einträge
   copy              1 Eintrag
+  setup             1 Eintrag
   beenden
 ```
 
 - Eingabe je Feld über `Input`; leere Eingabe behält den alten Wert. Validiert wird durch
   Neuladen (`Config::load`): schlägt es fehl, wird die Datei auf den Stand davor
   zurückgeschrieben und der Fehler als Warnung gemeldet. Keine doppelte Logik.
-- Listen (`repo_dirs`, `repos`, `copy`) laufen über einen gemeinsamen Untermenü-Helfer:
-  Einträge anzeigen, hinzufügen, entfernen. Eine Hilfsfunktion für drei Felder, kein
-  Zustandsautomat für „bearbeiten“.
-- `repos` fragt `url` und `name` (leer = aus der URL), `copy` fragt `from` und `to`
-  (leer = Dateiname), `repo_dirs` einen Pfad je Eintrag.
-- Geschrieben wird nach jeder Menüaktion; ein Listeneintrag landet also beim Verlassen des
-  Untermenüs in der Datei. Geschrieben werden absolute Pfade, die Kommentare der Datei
-  gehen dabei verloren (Entscheidung 12).
+- Listen (`repo_dirs`, `repos`, `copy`, `setup`) laufen über einen gemeinsamen
+  Untermenü-Helfer: Einträge anzeigen, hinzufügen, entfernen.
+  Eine Hilfsfunktion für vier Felder, kein Zustandsautomat für
+  „bearbeiten“.
+- `repos` fragt `url` und `name` (leer = aus der URL), `copy` fragt `from` und
+  `to` (leer = Dateiname), `repo_dirs` einen Pfad und `setup` einen Befehl je
+  Eintrag.
+- Geschrieben wird nach jeder Menüaktion; ein Listeneintrag landet beim Verlassen
+  des Untermenüs in der Datei. Geschrieben werden absolute Pfade; Kommentare gehen
+  beim Speichern verloren (Entscheidung 12).
 - `--path` bleibt (Fundort), neu `--show` (aufgelöste Config, bisheriges Verhalten des
   nackten `config`). Ohne TTY und ohne Flag: Fehler mit Hinweis auf `--show`.
 - Abbruch: `Esc` und `Ctrl-C` brechen jeden Prompt ab, Exit 1, nichts geschrieben;
-  „exit“ im Menü ist Exit 0. Prompt-Texte sind englisch wie der Rest der CLI.
+  „exit“ im Menü ist Exit 0. Prompt-Texte sind englisch wie der Rest der CLI. `Esc` als
+  „eine Ebene zurück“ und der Default statt Vorbelegung kommen mit 12.7.
 
 ### 11.3 `grover new` ohne Argumente
 
@@ -356,9 +373,13 @@ $ grover new
 
 ## 12. Roadmap (in dieser Reihenfolge)
 
-Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.4 ist offen und bekommt vor
-dem Code sein Go; die Tests aus Abschnitt 8 gelten mit. 12.5 ist Backlog, 12.6 ist die
-Absage.
+Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.4 ist umgesetzt; 12.5 bis
+12.8 bleiben offen und bekommen jeweils vor dem Code ihr Go. Die Tests aus Abschnitt 8 gelten
+mit. 12.9 ist Backlog, 12.10 ist die Absage.
+
+12.5–12.7 sind ein Paket (Bequemlichkeit des Wizards) und fassen dieselbe `Prompter`-API
+an; gebaut werden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
+vorigen aufsetzt.
 
 ### 12.1 `grover rm [<ticket>]` — aufräumen (umgesetzt)
 
@@ -449,7 +470,7 @@ web    ticket/PROJ-1      -             clean
 - Tests: Ausgabeformat mit einem sauberen und einem dirty Repo, Repo ohne Upstream, fremde
   Datei im Ticket-Ordner wird ignoriert, unbekanntes Ticket ist ein Fehler.
 
-### 12.4 Setup-Befehle nach dem Anlegen
+### 12.4 Setup-Befehle nach dem Anlegen (umgesetzt)
 
 Nach jedem Worktree folgt derselbe Handgriff: `.env` kopieren, `npm install`,
 `direnv allow`. Heute macht das die Hand oder ein Shell-Skript danach.
@@ -462,8 +483,9 @@ setup:                               # nach jedem neuen Worktree, cwd = Worktree
 - Eine Top-Level-Liste, kein Feld pro Repo: die Befehle sehen `GROVER_REPO` und
   `GROVER_TICKET`, ein `case "$GROVER_REPO"` reicht für den Sonderfall. Eine Map
   Name→Befehle wäre die nächste Stufe, keine zweite Config-Fläche zum Start.
-- Ausführung über `sh -c`, sequenziell, cwd = neuer Worktree, stdout/stderr geerbt (die
-  Install-Ausgabe soll sichtbar sein).
+- Ausführung über `sh -c`, sequenziell, cwd = neuer Worktree.
+  Setup-stdout geht nach stderr, stderr wird geerbt; Ausgabe bleibt sichtbar.
+  stdout enthält dadurch weiter nur den Ticket-Pfad.
 - Nur für Worktrees, die in diesem Lauf neu entstehen — nicht für übersprungene, nicht für
   `copy`-Ziele.
 - Fehlschlag: Warnung mit Exit-Code, der Worktree bleibt, der Lauf gilt als Erfolg. Kein
@@ -475,7 +497,133 @@ setup:                               # nach jedem neuen Worktree, cwd = Worktree
 - Tests: Befehl legt eine Datei im Worktree an, Fehlschlag ist eine Warnung ohne Abbruch,
   `--dry-run` führt nichts aus, übersprungener Worktree bekommt kein Setup.
 
-### 12.5 Kleinkram (Backlog, erst mit Bedarf)
+### 12.5 Pfad-Autovervollständigung
+
+Pfad-Prompts (`work_dir`, `repo_dirs`, `clone_dir`, `copy.from`, `copy.to`) tippt man heute
+von Hand. `inquire` bringt Tab-Completion mit, es fehlt nur ein `Autocomplete`.
+
+- `PathCompleter { cwd: PathBuf }` in `tui.rs` implementiert `inquire::Autocomplete` (muss
+  `Clone` sein): `get_suggestions` listet die Einträge des Verzeichnisses aus der Eingabe,
+  deren Name mit dem letzten Pfadsegment beginnt (Ordner immer, Dateien nur bei
+  Datei-Prompts); `get_completion` ergänzt auf das längste gemeinsame Präfix. Tab übernimmt,
+  `↑`/`↓` gehen durch die Vorschläge (`Text::with_page_size`).
+- `~` wird fürs Nachschlagen expandiert und in den Vorschlägen genau so zurückgegeben, wie
+  es getippt wurde — Tab darf die Home-Abkürzung nicht durch einen absoluten Pfad ersetzen.
+- Relative Eingaben gelten ab dem Arbeitsverzeichnis, `../` und `/` funktionieren. Mehr als
+  1000 Vorschläge werden nicht gelistet, damit die Liste bedienbar bleibt.
+- `Prompter::input_path` ist `input` (12.7) plus Completer; nur Pfad-Felder nutzen ihn.
+- Tests: Vorschläge zu einem Präfix, längstes gemeinsames Präfix, `~`-Rundlauf, ein Präfix
+  ohne Treffer liefert keine Vorschläge.
+
+### 12.6 Mehr Flags und Feldhilfe
+
+Der Wizard kennt die Felder, erklärt sie aber nicht: was `base` mit `main|master|HEAD`
+macht, steht nur in dieser Datei. Und wer einen Wert ändern will, klickt sich durchs Menü.
+
+- Eine Tabelle `FIELDS` trägt je skalarem Feld (`work_dir`, `branch_template`, `base`,
+  `clone_dir`, `ai.branch_name` aus 12.8) Name, Setter `fn(&mut Config, &str)` und einen
+  Satz Hilfe (Aufgabe, Beispiel, was Enter tut). Sie speist `--set`, den Editor und
+  `--init`: `edit_string`, `edit_path` und `edit_optional_path` werden zu einem Weg,
+  `required` zu „der Setter lehnt leer ab, also nochmal fragen“. `ai.branch_name` bleibt
+  im `--init` außen vor: optional und nichts für den ersten Start.
+- Die Hilfe steht dauerhaft als `help_message` unter dem Prompt und als zweite Spalte in
+  der Menüzeile (`work_dir  ~/work/tickets  where tickets go`); Listenfelder bekommen ihren
+  Satz in `menu`. Kein `?`-Key: `inquire` 0.9.4 kennt keine Help-Action, `?` landet im
+  Textfeld als Zeichen und in Listen im Filter. Damit gibt es genau einen Hilfe-Text je
+  Feld.
+- `grover config --set <feld>[=<wert>]` für die Felder aus `FIELDS`; Listen bleiben im
+  Editor, sonst bräuchte es eine zweite Syntax. Ein Argument mit `=`, weil clap bei zwei
+  Werten kein optionales zweites kennt. Ohne `=` wird auf einem TTY geprompted, ein leerer
+  Wert löscht `clone_dir`/`ai.branch_name`. Geschrieben wird über `save_and_reload` wie im
+  Editor; die Datei muss existieren.
+- `grover config --init --defaults`: `Config::new`, nur `work_dir` fragen, schreiben (nur
+  ein Wert, also ohne die Rückfrage aus 12.7).
+- Tests: `--set base` ändert nur `base`; unbekanntes Feld ist ein Fehler mit Kandidaten;
+  `--set` ohne Datei ist ein Fehler; `--defaults` schreibt eine ladbare Config; jeder Name
+  in `FIELDS` ist ein echtes Config-Feld.
+
+### 12.7 Besserer Wizard für `--init` und den Editor
+
+Zwei echte Defekte und fehlende Bequemlichkeit. Was `inquire` 0.9.4 hergibt (im Quelltext
+geprüft): Esc kommt als `OperationCanceled` an, Ctrl-C als `OperationInterrupted`;
+`prompt_skippable` macht nur aus dem ersten `Ok(None)`.
+
+1. **Default statt Vorbelegung.** `Text::with_initial_value(current)` legt den alten Wert in
+   den Puffer; wer ändern will, muss ihn erst löschen. Üblich ist: Default blass neben dem
+   Prompt zeigen, Enter übernimmt, Tippen ersetzt — `with_default(current)`, dazu
+   `theme.default_value` auf Dunkelgrau (heute leer, also unsichtbar abgesetzt). Kein
+   zusätzliches `with_placeholder`, sonst stünde der Wert zweimal da. Das ist der
+   Hauptgrund, warum der Wizard unausgereift wirkt.
+2. **Esc ist heute alles oder nichts.** Es kann „eine Ebene zurück“ heißen, ohne eigenes
+   Widget: der Feld-Prompt liefert `Ok(None)`, der Aufrufer entscheidet; Ctrl-C bleibt der
+   Abbruch. Dafür darf `cancelled()` `OperationInterrupted` nicht mehr verschlucken.
+3. **`--init` hat keinen Weg zurück** und schreibt ohne letzte Rückfrage.
+
+- `Prompter::input(prompt, default, hint)` ersetzt `input(prompt, initial)`: leer plus
+  Enter gibt den Default zurück, damit entfällt `answer_or_current`. Die `hint`-Texte
+  kommen aus `FIELDS` (12.6).
+- `cancelled()` behandelt nur Esc als Prompt-Abbruch; Ctrl-C wird ein Fehler → Exit 1,
+  nichts geschrieben (der Test `cancel_and_interrupt_are_aborts` wird angepasst).
+- Editor: Esc in einem Feld-Prompt führt zurück ins Menü, der alte Wert bleibt; Esc im Menü
+  beendet den Editor mit Exit 0 (jedes Feld schreibt weiterhin sofort, Entscheidung 12).
+  Listen-Untermenüs behalten `← back`.
+- `--init` wird eine numerierte Kette (`[2/7] base`): Esc im Feld geht zum vorigen Feld und
+  behält den getippten Wert, Esc im ersten Feld bricht ab. Den Schritt-Zähler liefert der
+  Index, den der Navigator ohnehin braucht.
+- Letzter Schritt ist ein `Confirm` „write <pfad>?“. Bis dahin ist nichts geschrieben; ein
+  „nein“ beendet mit Exit 1 ohne Datei.
+- `--init --force` auf einer ladbaren Datei füllt alle Defaults daraus vor; ist sie nicht
+  ladbar, kommt eine Warnung und der Lauf startet leer. Ohne `--force` bleibt die
+  vorhandene Datei ein Fehler.
+- Tests: Esc im Feld behält den Wert und kehrt ins Menü zurück; Ctrl-C bricht mit Fehler ab;
+  Esc in `--init` geht ein Feld zurück und behält die Eingabe; „nein“ in der Rückfrage
+  schreibt nichts; Enter ohne Eingabe nimmt den Default; vorhandene Werte erscheinen als
+  Default.
+
+### 12.8 Branch-Name aus einem lokalen Modell
+
+`branch_template` macht aus dem Ticket einen Namen. Ein lokales Modell kann aus dem Titel
+einen sprechenden machen (`ticket/PROJ-123-login-redirect-loop`).
+
+Analyse (auf dieser Maschine geprüft, 09.11.2026):
+
+- `ollama` ist installiert (llama3.1:8b, gemma4:31b, phi4, deepseek-r1:14b); `llm`,
+  `llama-cli` und `lms` sind es nicht. Ein 8B-Modell antwortet auf einen Einzeiler in rund
+  4–6 s, wenn es geladen ist.
+- `ollama run` schreibt eine Vorrede („Here is a kebab-case branch name: …“) nach stdout
+  und einen Spinner nach stderr. Der Parser braucht deshalb die letzte nicht-leere Zeile,
+  nicht die ganze Ausgabe; `--hidethinking` unterdrückt den Denk-Block von R1-Modellen.
+- Ergebnis: kein HTTP-Client, kein Modell-API, keine neue Dependency. Das Kommando ist die
+  Schnittstelle, `grover` normalisiert und prüft nur die Antwort (Abschnitt 9 bleibt).
+
+```yaml
+ai:
+  branch_name: >-
+    ollama run llama3.1:8b --hidethinking
+    "kebab-case branch name, max 5 words, prefix ticket/: $GROVER_TICKET $GROVER_TITLE"
+```
+
+- Ein optionales Top-Level-Feld `ai` mit genau einem Kommando, ausgeführt über `sh -c`.
+  stdin ist `null` (sonst greift das Modell-CLI das Terminal ab), stdout wird gefangen,
+  stderr geht als Debug-Log nach stderr. Env: `GROVER_TICKET` (Slug), `GROVER_TITLE`.
+- Die Antwort *ist* der Branch-Name; es gibt kein `{title}`-Token in `branch_template`.
+  `plan::branch_slug` schickt jedes `/`-Segment durch `slug`, damit `ticket/PROJ-123-foo`
+  seinen Slash behält; Backticks, Anführungszeichen und Leerzeilen fallen weg.
+- Der Titel kommt aus `new --title <text>`. Fehlt er und `ai` ist gesetzt, fragt `new` auf
+  einem TTY danach (überspringbar). Ohne Titel läuft das Kommando trotzdem — es kann den
+  Titel selbst holen (`curl` gegen Jira), das ist seine Sache.
+- Deadline 20 s (`spawn` plus `try_wait`-Polling; die Frist ist Parameter der Hilfsfunktion,
+  damit ein Test 50 ms nutzen kann). Fehler, Frist oder leere Antwort: Warnung und
+  `branch_template` wie bisher. 20 s decken 8B geladen ab; ein 31B-Modell lädt beim ersten
+  Aufruf länger und fällt dann auf den bisherigen Namen zurück. Bewusst kein Config-Feld
+  dafür, bis es wirklich stört.
+- `--dry-run` führt das Kommando nicht aus und sagt das; ein Prompt für den Branch-Namen
+  gibt es nicht (nicht reproduzierbar).
+- Tests: Antwort → Branch wie geliefert (normalisiert); Vorrede und Backticks fallen weg;
+  `ticket/PROJ-1-A` behält den Slash; Fehler und Frist → bisheriger Name mit Warnung; ohne
+  `ai`-Feld bleibt alles unverändert; `--dry-run` führt nichts aus.
+
+### 12.9 Kleinkram (Backlog, erst mit Bedarf)
 
 Klein, aber ohne Bedarf kein Code; der Auslöser steht jeweils dabei.
 
@@ -491,7 +639,7 @@ Klein, aber ohne Bedarf kein Code; der Auslöser steht jeweils dabei.
 Bereits vorhanden, nur nirgends als Feature genannt: existiert der Ticket-Branch schon im
 Repo, nutzt `worktree_add` ihn (`branch_exists`) statt neu zu basen.
 
-### 12.6 Nicht bauen
+### 12.10 Nicht bauen
 
 - `--json`: niemand konsumiert es, `list` und `status` sind schon maschinenlesbar genug.
 - Fullscreen-TUI, Maus, History/Undo.

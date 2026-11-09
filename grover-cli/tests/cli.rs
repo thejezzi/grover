@@ -43,9 +43,10 @@ fn fixture() -> (TempDir, String) {
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
 
     let path = root.path().join("grover.yaml");
+    let work_dir = root.path().canonicalize().expect("root").join("tickets");
     let yaml = format!(
         "work_dir: \"{}\"\nrepo_dirs: [\"{}\"]\n",
-        root.path().join("tickets").display(),
+        work_dir.display(),
         root.path().join("code").display()
     );
     fs::write(&path, yaml).expect("config");
@@ -81,19 +82,29 @@ fn config_init_needs_force_for_an_existing_file() {
 }
 
 #[test]
-fn config_init_defaults_to_the_grover_xdg_path() {
+fn config_init_uses_the_platform_config_path() {
     let root = tempfile::tempdir().expect("tempdir");
+    let xdg = root.path().join("xdg");
+    let appdata = root.path().join("AppData/Roaming");
+    let path = if cfg!(target_os = "macos") {
+        root.path().join("Library/Application Support/grover/config.yaml")
+    } else if cfg!(target_os = "windows") {
+        appdata.join("grover/config.yaml")
+    } else {
+        xdg.join("grover/config.yaml")
+    };
     let init = Command::new(env!("CARGO_BIN_EXE_grover"))
         .args(["config", "--init"])
         .current_dir(root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("xdg"))
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", xdg)
+        .env("APPDATA", appdata)
         .stdin(Stdio::null())
         .output()
         .expect("grover starts");
 
     assert_eq!(init.status.code(), Some(1));
-    let path = root.path().join("xdg/grover/config.yaml");
-    assert!(err(&init).contains("xdg/grover/config.yaml"), "{}", err(&init));
+    assert!(err(&init).contains(&path.display().to_string()), "{}", err(&init));
     assert!(!path.exists(), "nothing written");
 }
 
@@ -138,9 +149,69 @@ fn new_prints_only_the_ticket_dir() {
     let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
 
     assert_eq!(created.status.code(), Some(0), "{}", err(&created));
-    let ticket = root.path().join("tickets/PROJ-1");
+    let ticket = root.path().canonicalize().expect("root").join("tickets/PROJ-1");
     assert_eq!(out(&created), ticket.display().to_string());
     assert!(ticket.join("api/.git").exists());
+}
+
+#[test]
+fn setup_runs_only_for_new_worktrees_with_repo_and_ticket_context() {
+    let (root, config) = fixture();
+    let existing = fs::read_to_string(&config).expect("config");
+    let setup = concat!(
+        "setup:\n",
+        "  - 'printf \"%s/\" \"$GROVER_TICKET\" > setup.txt'\n",
+        "  - 'printf \"%s\" \"$GROVER_REPO\" >> setup.txt'\n",
+        "  - 'printf \"setup output\"'\n"
+    );
+    fs::write(&config, format!("{existing}{setup}")).expect("config with setup");
+
+    let created = run(root.path(), &["new", "PROJ 1/foo", "-r", "api", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket_dir = root.path().canonicalize().expect("root").join("tickets/PROJ-1-foo");
+    assert_eq!(out(&created), ticket_dir.display().to_string());
+    assert!(err(&created).contains("setup output"), "{}", err(&created));
+    let setup_file = root.path().join("tickets/PROJ-1-foo/api/setup.txt");
+    assert_eq!(fs::read_to_string(&setup_file).expect("setup output"), "PROJ-1-foo/api");
+
+    fs::remove_file(&setup_file).expect("remove setup output");
+    let skipped = run(root.path(), &["new", "PROJ 1/foo", "-r", "api", "-c", &config]);
+    assert_eq!(skipped.status.code(), Some(0), "{}", err(&skipped));
+    assert!(!setup_file.exists(), "existing worktrees do not run setup again");
+}
+
+#[test]
+fn setup_dry_run_logs_commands_without_running_them() {
+    let (root, config) = fixture();
+    let existing = fs::read_to_string(&config).expect("config");
+    fs::write(&config, format!("{existing}setup:\n  - \"touch marker\"\n"))
+        .expect("config with setup");
+
+    let dry_run = run(root.path(), &["new", "PROJ-2", "-r", "api", "-n", "-c", &config]);
+
+    assert_eq!(dry_run.status.code(), Some(0), "{}", err(&dry_run));
+    assert!(err(&dry_run).contains("touch marker"), "{}", err(&dry_run));
+    assert!(!root.path().join("marker").exists(), "setup command is not run");
+    assert!(!root.path().join("tickets/PROJ-2").exists(), "dry-run writes nothing");
+}
+
+#[test]
+fn failed_setup_warns_but_keeps_the_worktree_and_succeeds() {
+    let (root, config) = fixture();
+    let existing = fs::read_to_string(&config).expect("config");
+    fs::write(
+        &config,
+        format!("{existing}setup:\n  - \"exit 23\"\n  - \"printf done > after-failure.txt\"\n"),
+    )
+    .expect("config with failing setup");
+
+    let created = run(root.path(), &["new", "PROJ-3", "-r", "api", "-c", &config]);
+
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    assert!(err(&created).contains("exit status: 23"), "{}", err(&created));
+    let worktree = root.path().join("tickets/PROJ-3/api");
+    assert!(worktree.join(".git").exists());
+    assert_eq!(fs::read_to_string(worktree.join("after-failure.txt")).expect("next setup"), "done");
 }
 
 #[test]
@@ -207,7 +278,7 @@ fn path_prints_the_ticket_dir_from_the_argument_or_the_cwd() {
     let (root, config) = fixture();
     let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
     assert_eq!(created.status.code(), Some(0), "{}", err(&created));
-    let ticket = root.path().join("tickets/PROJ-1");
+    let ticket = root.path().canonicalize().expect("root").join("tickets/PROJ-1");
 
     let named = run(root.path(), &["path", "PROJ-1", "-c", &config]);
     assert_eq!(named.status.code(), Some(0), "{}", err(&named));

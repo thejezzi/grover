@@ -39,14 +39,14 @@ or invalid file is an error for the commands that read it. `grover completions` 
 read the config at all, and `grover config --init` creates a config instead of reading one.
 
 Verbosity changes what is written to stderr, never what is written to stdout. The default
-level reports each created folder, worktree and copy as one line, plus a summary line with
+level reports each created folder, worktree, setup command and copy as one line, plus a summary line with
 the counts of created, skipped and cloned items. `-q` keeps warnings and errors and drops
 those progress lines; `-v` adds debug output. Setting the environment variable `GROVER_LOG`
 overrides both flags; its value is a log filter such as `debug` or `grover_lib=trace`.
 
-One environment variable is set by `grover` for its own child processes rather than read by
-it: `git` is called with `GIT_TERMINAL_PROMPT=0`, so a repository that needs interactive
-credentials fails instead of waiting for input.
+`git` is called with `GIT_TERMINAL_PROMPT=0`, so a repository that needs interactive
+credentials fails instead of waiting for input. Setup commands inherit `GROVER_REPO` and
+`GROVER_TICKET`; see [Environment variables](#environment-variables).
 
 ## Prompts
 
@@ -115,12 +115,12 @@ name), the repository discovery, the fuzzy selection and the target paths; it fa
 touching the disk if the ticket name has no usable characters, a repository name is unknown
 or ambiguous, or the config is invalid. Writing creates the ticket folder (including missing
 parent folders), clones remote repositories that are not present yet, adds one worktree per
-repository, and then copies the files from `copy`.
+repository, runs `setup` for each new worktree, and then copies the files from `copy`.
 
 Each new branch starts at the first existing ref of `base` in that repository — a ref is a
 git name for a commit — or is reused if a branch with that name already exists. The whole
-order is: ticket folder, then for each repository the clone and the worktree, then the
-copies.
+order is: ticket folder, then for each repository the clone, worktree and setup commands,
+then the copies.
 
 Paths that already exist are skipped with a warning, and the run still ends with exit code
 0. This makes the command idempotent, and it allows a later call to add a repository to an
@@ -135,9 +135,9 @@ existing worktree is left as it is.
 
 ### Dry run
 
-`--dry-run` prints every step it would take and writes nothing: no folder, no clone, no
-worktree, no copy. The progress lines are the same as in a real run, followed by
-`dry-run: nothing written`, and the ticket folder is printed on stdout. The summary line
+`--dry-run` prints every step it would take and writes nothing: no folder, clone, worktree,
+setup command or copy. Setup commands are logged but not run. The progress lines are followed
+by `dry-run: nothing written`, and the ticket folder is printed on stdout. The summary line
 counts what would have been created. A dry run is the safe way to check a new config or an
 unfamiliar repository selection.
 
@@ -349,9 +349,9 @@ form and the defaults filled in. It is the mode for scripts and for answering "w
 `grover` actually using?", and it needs no terminal.
 
 `--init` is the wizard: it asks for `work_dir` first, repeating until a non-empty answer
-arrives, then for `branch_template` and `base` with their defaults pre-filled, then for
-`repo_dirs` (a list), `clone_dir`, `repos` (a list) and `copy` (a list). An empty answer
-keeps the shown default; in a list, choosing the back entry leaves the list as it is. The
+arrives, then for `branch_template` and `base` with defaults pre-filled, then for
+`repo_dirs` (a list), `clone_dir`, and the `repos`, `copy` and `setup` lists. An empty
+answer keeps the shown default; choosing the back entry leaves a list as it is. The
 target is `--config` when given, else an existing config, else the `dirs` config path,
 which is `$XDG_CONFIG_HOME/grover/config.yaml` on Linux. An existing file is refused unless
 `--force` is given. The file is written only after the whole config has been validated, so
@@ -394,6 +394,8 @@ The command does not read the config, so it works before the first ticket exists
 | `HOME` | Source of `~` in config paths and of the default `clone_dir` |
 | `GROVER_LOG` | Log filter that overrides `-v` and `-q` |
 | `NO_COLOR` | Set to any value to turn off colours in prompts, keeping the layout |
+| `GROVER_REPO` | Repo name passed to each setup command |
+| `GROVER_TICKET` | Normalized ticket slug passed to each setup command |
 | `GIT_TERMINAL_PROMPT` | Set to `0` for `grover`'s own git calls; credentials cannot be typed |
 
 `NO_COLOR` affects the interactive prompts only; the log lines on stderr have no colour.

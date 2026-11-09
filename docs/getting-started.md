@@ -46,13 +46,16 @@ $ grover config --init
 ...
 ```
 
-The wizard asks for one value at a time, in this order: `work_dir`, `branch_template`,
-`base`, `repo_dirs`, `clone_dir`, `repos` and `copy`. `work_dir` is the only value without
-a default: it is the folder in which ticket folders will be created, for example
-`/home/you/work/tickets`. The other questions show their default and accept it with Enter.
-The three lists (`repo_dirs`, `repos`, `copy`) are small menus: choose the `+ add` entry to
-append a value, and leave the list through its back entry. Nothing is written until every
-answer has passed validation, so a cancellation leaves no half-finished file behind.
+The wizard asks for one value at a time, in this order: `work_dir`,
+`branch_template`, `base`, `repo_dirs`, `clone_dir`, `repos`, `copy` and
+`setup`. `work_dir` is the only value without a default: it is the folder
+where ticket folders will be created, for example `/home/you/work/tickets`.
+The other questions show their defaults and accept them with Enter.
+The four lists (`repo_dirs`, `repos`, `copy`, `setup`) are menus: choose
+`+ add` to append a value, then leave through the back entry. `setup` commands
+run in order after each new worktree. Their output goes to stderr, so stdout
+stays the ticket path. Nothing is written until every answer passes validation,
+so cancellation leaves no half-finished file behind.
 
 If you prefer to write the file yourself, put this in `~/.config/grover/config.yaml` (or in
 `./grover.yaml` next to your work):
@@ -104,7 +107,8 @@ with `--all`.
    with its own files — at `<ticket folder>/<repo name>`, on a new branch named after
    `branch_template`. The default template is `ticket/{ticket}`, so the branch is
    `ticket/PROJ-123`.
-5. It copies the files from the `copy` list into the ticket folder.
+5. It runs the configured `setup` commands in each new worktree.
+6. It copies the files from the `copy` list into the ticket folder.
 
 The result looks like this:
 

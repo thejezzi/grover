@@ -30,3 +30,7 @@ repos:
 copy:
   - from: "~/templates/AGENTS.md"
     to: AGENTS.md                # optional, otherwise the file name
+
+# Commands run in order after each new worktree is created.
+setup:
+  - "npm install"
