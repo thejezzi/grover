@@ -1,7 +1,8 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.4 umgesetzt, `make check` grün (85 Tests). Abschnitt 12
-ist die priorisierte Liste der nächsten Features; 12.5–12.8 bekommen vor dem Code ein Go.
+Status: Abschnitte 1–11 und 12.1–12.6 umgesetzt, `make check` grün (92 Tests). Abschnitt 12
+ist die priorisierte Liste der nächsten Features; 12.5, 12.7 und 12.8 bekommen vor dem Code
+ein Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -286,6 +287,7 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.2 `grover path`: Argument, Fuzzy, cwd (73 Tests)
 - [x] 12.3 `grover status`: Branch, Upstream, dirty, Tabelle (81 Tests)
 - [x] 12.4 Setup-Befehle nach Worktree-Erstellung (85 Tests)
+- [x] 12.6 `--set`, Feldhilfe in Editor und Wizard (92 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -373,13 +375,13 @@ $ grover new
 
 ## 12. Roadmap (in dieser Reihenfolge)
 
-Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.4 ist umgesetzt; 12.5 bis
-12.8 bleiben offen und bekommen jeweils vor dem Code ihr Go. Die Tests aus Abschnitt 8 gelten
-mit. 12.9 ist Backlog, 12.10 ist die Absage.
+Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.4 und 12.6 sind
+umgesetzt; 12.5, 12.7 und 12.8 bekommen jeweils vor dem Code ihr Go. Die Tests aus
+Abschnitt 8 gelten mit. 12.9 ist Backlog, 12.10 ist die Absage.
 
 12.5–12.7 sind ein Paket (Bequemlichkeit des Wizards) und fassen dieselbe `Prompter`-API
 an; gebaut werden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
-vorigen aufsetzt.
+vorigen aufsetzt. 12.6 ist umgesetzt, als nächstes folgt 12.7.
 
 ### 12.1 `grover rm [<ticket>]` — aufräumen (umgesetzt)
 
@@ -515,17 +517,17 @@ von Hand. `inquire` bringt Tab-Completion mit, es fehlt nur ein `Autocomplete`.
 - Tests: Vorschläge zu einem Präfix, längstes gemeinsames Präfix, `~`-Rundlauf, ein Präfix
   ohne Treffer liefert keine Vorschläge.
 
-### 12.6 Mehr Flags und Feldhilfe
+### 12.6 Mehr Flags und Feldhilfe (umgesetzt)
 
 Der Wizard kennt die Felder, erklärt sie aber nicht: was `base` mit `main|master|HEAD`
 macht, steht nur in dieser Datei. Und wer einen Wert ändern will, klickt sich durchs Menü.
 
-- Eine Tabelle `FIELDS` trägt je skalarem Feld (`work_dir`, `branch_template`, `base`,
-  `clone_dir`, `ai.branch_name` aus 12.8) Name, Setter `fn(&mut Config, &str)` und einen
-  Satz Hilfe (Aufgabe, Beispiel, was Enter tut). Sie speist `--set`, den Editor und
-  `--init`: `edit_string`, `edit_path` und `edit_optional_path` werden zu einem Weg,
-  `required` zu „der Setter lehnt leer ab, also nochmal fragen“. `ai.branch_name` bleibt
-  im `--init` außen vor: optional und nichts für den ersten Start.
+- Eine Tabelle `FIELDS` trägt je bestehendem skalarem Feld (`work_dir`, `branch_template`,
+  `base`, `clone_dir`) Name, Setter `fn(&mut Config, &str)` und einen Satz Hilfe
+  (Aufgabe, Beispiel, was Enter tut). Sie speist `--set`, Editor und `--init`:
+  `edit_string`, `edit_path` und `edit_optional_path` werden zu einem Weg, `required`
+  zu „der Setter lehnt leer ab, also nochmal fragen“. `ai.branch_name` kommt erst mit
+  12.8 in die Tabelle.
 - Die Hilfe steht dauerhaft als `help_message` unter dem Prompt und als zweite Spalte in
   der Menüzeile (`work_dir  ~/work/tickets  where tickets go`); Listenfelder bekommen ihren
   Satz in `menu`. Kein `?`-Key: `inquire` 0.9.4 kennt keine Help-Action, `?` landet im
@@ -534,13 +536,10 @@ macht, steht nur in dieser Datei. Und wer einen Wert ändern will, klickt sich d
 - `grover config --set <feld>[=<wert>]` für die Felder aus `FIELDS`; Listen bleiben im
   Editor, sonst bräuchte es eine zweite Syntax. Ein Argument mit `=`, weil clap bei zwei
   Werten kein optionales zweites kennt. Ohne `=` wird auf einem TTY geprompted, ein leerer
-  Wert löscht `clone_dir`/`ai.branch_name`. Geschrieben wird über `save_and_reload` wie im
+  Wert löscht `clone_dir`. Geschrieben wird über `save_and_reload` wie im
   Editor; die Datei muss existieren.
-- `grover config --init --defaults`: `Config::new`, nur `work_dir` fragen, schreiben (nur
-  ein Wert, also ohne die Rückfrage aus 12.7).
 - Tests: `--set base` ändert nur `base`; unbekanntes Feld ist ein Fehler mit Kandidaten;
-  `--set` ohne Datei ist ein Fehler; `--defaults` schreibt eine ladbare Config; jeder Name
-  in `FIELDS` ist ein echtes Config-Feld.
+  `--set` ohne Datei ist ein Fehler; jeder Name in `FIELDS` ist ein echtes Config-Feld.
 
 ### 12.7 Besserer Wizard für `--init` und den Editor
 

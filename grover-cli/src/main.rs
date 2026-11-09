@@ -70,6 +70,9 @@ enum Command {
     },
     /// Edit the config interactively on a terminal
     Config {
+        /// Set one scalar field; prompt for the value when omitted
+        #[arg(long, value_name = "FIELD[=VALUE]", conflicts_with_all = ["path", "show", "init"])]
+        set: Option<String>,
         /// Show the config location only
         #[arg(short, long, conflicts_with = "show")]
         path: bool,
@@ -141,8 +144,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let dir = ticket_dir(&config, ticket.as_deref())?;
             print_status(&plan::statuses(&dir)?);
         }
-        Command::Config { path, show, init, force } => {
-            config_cmd(config_path, path, show, init, force)?
+        Command::Config { path, show, init, force, set } => {
+            config_cmd(config_path, path, show, init, force, set.as_deref())?
         }
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "grover", &mut io::stdout());
@@ -231,7 +234,14 @@ fn config_cmd(
     show: bool,
     init: bool,
     force: bool,
+    set: Option<&str>,
 ) -> anyhow::Result<()> {
+    if let Some(argument) = set {
+        let target = Config::locate(config_path)?;
+        tui::set_config_field(&target, argument, &mut tui::Tui)?;
+        tracing::info!("updated {}", target.display());
+        return Ok(());
+    }
     if init {
         let target = Config::target(config_path)?;
         if target.exists() && !force {

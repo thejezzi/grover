@@ -255,18 +255,19 @@ is a menu, and it looks like this:
 
 ```text
 ? Config · /home/you/.config/grover/config.yaml
-❯ work_dir          /home/you/work/tickets
-  branch_template   ticket/{ticket}
-  base              main|master|HEAD
-  repo_dirs         2 entries
-  clone_dir         /home/you/.grover/repos
-  repos             0 entries
-  copy              1 entry
-  setup             0 entries
+❯ work_dir          /home/you/work/tickets  Required; ticket folder parent.
+  branch_template   ticket/{ticket}          Branch pattern, e.g. ticket/{ticket}.
+  base              main|master|HEAD         Fallback refs in order.
+  repo_dirs         2 entries                Search direct child folders for local repos.
+  clone_dir         /home/you/.grover/repos  Remote clone folder; empty clears it.
+  repos             0 entries                Remote repos are cloned when selected.
+  copy              1 entry                  Copy files into each ticket folder.
+  setup             0 entries                Run commands after each new worktree.
   ← exit
 ```
 
-Choosing a string field asks for a new value with the old one pre-filled; an empty answer
+The third column is the one-sentence help that the field also shows under its prompt.
+Choosing a scalar field asks for a new value with the old one pre-filled; an empty answer
 keeps it. Choosing a list opens a small submenu with the entries, an entry for adding one,
 and an entry for going back; picking an existing entry removes it. There is no in-place edit
 of a list entry, only add and remove.
@@ -289,6 +290,11 @@ existing config unless you pass `--force`.
 Like the editor, it needs a terminal; without one it fails and names the file it would have
 written. An interrupted or invalid wizard leaves no new file behind and keeps an existing
 one untouched, because the file is written only after the whole config has been validated.
+
+For one change there is `grover config --set <field>[=<value>]`, which edits a single scalar
+field and writes the file without opening the editor. Without `=<value>` it prompts on a
+terminal; an empty value clears `clone_dir`. Only the fields shown as scalars in the menu are
+supported, lists stay in the editor, and the config file must already exist.
 
 Values you enter with the default kept are written as well, so the result is a complete
 config. Lists that end up empty are left out entirely, which keeps the file short; a valid

@@ -14,6 +14,7 @@ grover path [<ticket>]
 grover status [<ticket>]
 grover rm [<ticket>] [-f|--force] [-n|--dry-run]
 grover config [-p|--path] [-s|--show] [-i|--init [--force]]
+              [--set <field>[=<value>]]
 grover completions <shell>
 ```
 
@@ -39,8 +40,8 @@ or invalid file is an error for the commands that read it. `grover completions` 
 read the config at all, and `grover config --init` creates a config instead of reading one.
 
 Verbosity changes what is written to stderr, never what is written to stdout. The default
-level reports each created folder, worktree, setup command and copy as one line, plus a summary line with
-the counts of created, skipped and cloned items. `-q` keeps warnings and errors and drops
+level reports each created folder, worktree, setup command and copy as one line, plus a
+summary line with the counts of created, skipped and cloned items. `-q` keeps warnings and errors and drops
 those progress lines; `-v` adds debug output. Setting the environment variable `GROVER_LOG`
 overrides both flags; its value is a log filter such as `debug` or `grover_lib=trace`.
 
@@ -327,17 +328,18 @@ are not listed.
 
 ```text
 grover config [-p|--path] [-s|--show] [-i|--init [--force]]
+              [--set <field>[=<value>]]
 ```
 
-Without a flag, `config` opens the interactive editor for the config file. The three options
-select something else instead; `--path` and `--show` are mutually exclusive, and `--init`
-cannot be combined with either.
+Without a flag, `config` opens the interactive editor for the config file. The mode options
+`--path`, `--show`, `--init` and `--set` cannot be combined.
 
 | Option | Meaning |
 | --- | --- |
 | `-p`, `--path` | Print the config file location only |
 | `-s`, `--show` | Print the resolved config as YAML |
 | `-i`, `--init` | Ask for every value and write a new config |
+| `--set FIELD[=VALUE]` | Set one scalar; prompt if `=VALUE` is omitted |
 | `--force` | Overwrite an existing file; only with `--init` |
 
 `--path` prints the file that reading would use. Because it needs a location, the file must
@@ -347,6 +349,10 @@ the expected path. The output is one line on stdout.
 `--show` loads the config and prints it as YAML, with the resolved paths shown in absolute
 form and the defaults filled in. It is the mode for scripts and for answering "what is
 `grover` actually using?", and it needs no terminal.
+
+`--set FIELD=VALUE` updates one scalar field without opening the editor. Without `=VALUE`,
+it prompts on a terminal; an empty value clears `clone_dir`. List fields remain in the
+editor. The config file must already exist.
 
 `--init` is the wizard: it asks for `work_dir` first, repeating until a non-empty answer
 arrives, then for `branch_template` and `base` with defaults pre-filled, then for

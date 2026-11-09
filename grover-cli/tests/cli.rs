@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+use grover_lib::config::Config;
 use tempfile::TempDir;
 
 fn run(dir: &Path, args: &[&str]) -> Output {
@@ -119,6 +120,70 @@ fn config_shows_the_yaml_and_the_path() {
     let located = run(root.path(), &["config", "-c", &config, "--path"]);
     assert_eq!(located.status.code(), Some(0), "{}", err(&located));
     assert!(out(&located).ends_with("grover.yaml"), "{}", out(&located));
+}
+
+#[test]
+fn config_set_updates_only_the_selected_field() {
+    let (root, config) = fixture();
+    let before = Config::load(Some(Path::new(&config))).expect("load before");
+
+    let updated = run(root.path(), &["config", "--set", "base=develop", "-c", &config]);
+
+    assert_eq!(updated.status.code(), Some(0), "{}", err(&updated));
+    assert_eq!(out(&updated), "");
+    let after = Config::load(Some(Path::new(&config))).expect("load after");
+    assert_eq!(after.base, "develop");
+    assert_eq!(after.work_dir, before.work_dir);
+    assert_eq!(after.repo_dirs, before.repo_dirs);
+    assert_eq!(after.branch_template, before.branch_template);
+}
+
+#[test]
+fn config_set_empty_clone_dir_clears_the_override() {
+    let (root, config) = fixture();
+    let yaml = fs::read_to_string(&config).expect("config");
+    fs::write(&config, format!("{yaml}clone_dir: clones\n")).expect("clone dir");
+
+    let updated = run(root.path(), &["config", "--set", "clone_dir=", "-c", &config]);
+
+    assert_eq!(updated.status.code(), Some(0), "{}", err(&updated));
+    let written = fs::read_to_string(&config).expect("read");
+    assert!(!written.contains("clone_dir:"), "override is gone: {written}");
+}
+
+#[test]
+fn config_set_unknown_field_shows_candidates() {
+    let (root, config) = fixture();
+
+    let updated = run(root.path(), &["config", "--set", "unknown=value", "-c", &config]);
+
+    assert_eq!(updated.status.code(), Some(1));
+    let message = err(&updated);
+    assert!(message.contains("unknown field"), "{message}");
+    assert!(message.contains("work_dir"), "{message}");
+    assert!(message.contains("clone_dir"), "{message}");
+}
+
+#[test]
+fn config_set_without_a_value_needs_a_terminal() {
+    let (root, config) = fixture();
+
+    let updated = run(root.path(), &["config", "--set", "base", "-c", &config]);
+
+    assert_eq!(updated.status.code(), Some(1));
+    assert!(err(&updated).contains("no terminal"), "{}", err(&updated));
+}
+
+#[test]
+fn config_set_needs_an_existing_file() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("missing.yaml");
+
+    let updated =
+        run(root.path(), &["config", "--set", "base=main", "-c", path.to_str().expect("utf8")]);
+
+    assert_eq!(updated.status.code(), Some(1));
+    assert!(err(&updated).contains("missing.yaml"), "{}", err(&updated));
 }
 
 #[test]

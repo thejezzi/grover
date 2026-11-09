@@ -23,7 +23,7 @@ pub fn available() -> bool {
 
 /// What the flows ask; `None` means the user aborted.
 pub trait Prompter {
-    fn input(&mut self, prompt: &str, initial: &str) -> anyhow::Result<Option<String>>;
+    fn input(&mut self, prompt: &str, initial: &str, help: &str) -> anyhow::Result<Option<String>>;
     fn select(&mut self, prompt: &str, items: &[String]) -> anyhow::Result<Option<usize>>;
     fn multi_select(
         &mut self,
@@ -36,10 +36,10 @@ pub trait Prompter {
 pub struct Tui;
 
 impl Prompter for Tui {
-    fn input(&mut self, prompt: &str, initial: &str) -> anyhow::Result<Option<String>> {
+    fn input(&mut self, prompt: &str, initial: &str, help: &str) -> anyhow::Result<Option<String>> {
         let answer = Text::new(prompt)
             .with_initial_value(initial)
-            .with_help_message(INPUT_HELP)
+            .with_help_message(help)
             .with_render_config(theme())
             .prompt_skippable();
         cancelled(answer)
@@ -133,7 +133,7 @@ pub fn complete(
 
 /// Ticket for `new`; the slug check happens later in `Plan::build`.
 fn ask_ticket(prompter: &mut dyn Prompter) -> anyhow::Result<String> {
-    prompter.input("Ticket", "")?.ok_or_else(abort)
+    prompter.input("Ticket", "", INPUT_HELP)?.ok_or_else(abort)
 }
 
 /// Ticket for `rm`: pick from the existing ones, never a guess.
@@ -177,18 +177,121 @@ fn repo_label(repo: &repo::Repo, width: usize) -> String {
     format!("{:<width$}  {}", repo.name, source)
 }
 
+struct ScalarField {
+    name: &'static str,
+    help: &'static str,
+    value: fn(&Config) -> String,
+    set: fn(&mut Config, &str) -> anyhow::Result<()>,
+}
+
+static WORK_DIR: ScalarField = ScalarField {
+    name: "work_dir",
+    help: "Required; ticket folder parent, e.g. ~/work/tickets.",
+    value: work_dir_value,
+    set: set_work_dir,
+};
+static BRANCH_TEMPLATE: ScalarField = ScalarField {
+    name: "branch_template",
+    help: "Branch pattern, e.g. ticket/{ticket}; Enter keeps it.",
+    value: |config| config.branch_template.clone(),
+    set: set_branch_template,
+};
+static BASE: ScalarField = ScalarField {
+    name: "base",
+    help: "Fallback refs in order, e.g. main|master|HEAD; Enter keeps it.",
+    value: |config| config.base.clone(),
+    set: set_base,
+};
+static CLONE_DIR: ScalarField = ScalarField {
+    name: "clone_dir",
+    help: "Remote clone folder; empty clears it.",
+    value: |config| config.clone_dir.as_deref().map(path_text).unwrap_or_default(),
+    set: set_clone_dir,
+};
+static FIELDS: [&ScalarField; 4] = [&WORK_DIR, &BRANCH_TEMPLATE, &BASE, &CLONE_DIR];
+
 /// One line of the editor menu, in the order the user sees it.
 #[derive(Clone, Copy)]
 enum Field {
-    WorkDir,
-    BranchTemplate,
-    Base,
+    Scalar(&'static ScalarField),
     RepoDirs,
-    CloneDir,
     Repos,
     Copy,
     Setup,
     Exit,
+}
+
+impl Field {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Scalar(field) => field.name,
+            Self::RepoDirs => "repo_dirs",
+            Self::Repos => "repos",
+            Self::Copy => "copy",
+            Self::Setup => "setup",
+            Self::Exit => "",
+        }
+    }
+
+    fn value(self, config: &Config) -> String {
+        match self {
+            Self::Scalar(field) => (field.value)(config),
+            Self::RepoDirs => count(config.repo_dirs.len()),
+            Self::Repos => count(config.repos.len()),
+            Self::Copy => count(config.copy.len()),
+            Self::Setup => count(config.setup.len()),
+            Self::Exit => String::new(),
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::Scalar(field) => field.help,
+            Self::RepoDirs => "Search direct child folders for local repos.",
+            Self::Repos => "Remote repos are cloned when selected.",
+            Self::Copy => "Copy files into each ticket folder.",
+            Self::Setup => "Run commands after each new worktree.",
+            Self::Exit => "",
+        }
+    }
+}
+
+fn work_dir_value(config: &Config) -> String {
+    path_text(&config.work_dir)
+}
+
+fn required_value(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("{field} is required");
+    }
+    Ok(())
+}
+
+fn set_work_dir(config: &mut Config, value: &str) -> anyhow::Result<()> {
+    required_value("work_dir", value)?;
+    config.work_dir = PathBuf::from(value);
+    Ok(())
+}
+
+fn set_branch_template(config: &mut Config, value: &str) -> anyhow::Result<()> {
+    required_value("branch_template", value)?;
+    config.branch_template = value.to_string();
+    Ok(())
+}
+
+fn set_base(config: &mut Config, value: &str) -> anyhow::Result<()> {
+    required_value("base", value)?;
+    config.base = value.to_string();
+    Ok(())
+}
+
+fn set_clone_dir(config: &mut Config, value: &str) -> anyhow::Result<()> {
+    config.clone_dir = (!value.is_empty()).then(|| PathBuf::from(value));
+    Ok(())
+}
+
+fn scalar_field(name: &str) -> Option<&'static ScalarField> {
+    FIELDS.iter().copied().find(|field| field.name == name)
 }
 
 /// Config editor: one menu over all top-level fields, written after each entry.
@@ -207,11 +310,7 @@ pub fn edit_config(
         // An index without a field leaves the editor: nothing to ask, nothing to write.
         let field = fields.get(choice).map_or(Field::Exit, |(field, _)| *field);
         match field {
-            Field::WorkDir => edit_path(prompter, "work_dir", &mut config.work_dir)?,
-            Field::BranchTemplate => {
-                edit_string(prompter, "branch_template", &mut config.branch_template)?
-            }
-            Field::Base => edit_string(prompter, "base", &mut config.base)?,
+            Field::Scalar(field) => edit_scalar(prompter, config, field)?,
             Field::RepoDirs => edit_list(
                 prompter,
                 "repo_dirs",
@@ -219,7 +318,6 @@ pub fn edit_config(
                 |dir| path_text(dir),
                 ask_dir,
             )?,
-            Field::CloneDir => edit_optional_path(prompter, "clone_dir", &mut config.clone_dir)?,
             Field::Repos => {
                 edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?
             }
@@ -241,12 +339,12 @@ pub fn edit_config(
 
 /// `config --init`: ask every field once, then write. Nothing is written on error.
 pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()> {
-    let work_dir = PathBuf::from(required(prompter, "work_dir")?);
-    let mut config = Config::new(work_dir);
-    edit_string(prompter, "branch_template", &mut config.branch_template)?;
-    edit_string(prompter, "base", &mut config.base)?;
+    let mut config = Config::new(PathBuf::new());
+    edit_scalar(prompter, &mut config, &WORK_DIR)?;
+    edit_scalar(prompter, &mut config, &BRANCH_TEMPLATE)?;
+    edit_scalar(prompter, &mut config, &BASE)?;
     edit_list(prompter, "repo_dirs", &mut config.repo_dirs, |dir| path_text(dir), ask_dir)?;
-    edit_optional_path(prompter, "clone_dir", &mut config.clone_dir)?;
+    edit_scalar(prompter, &mut config, &CLONE_DIR)?;
     edit_list(prompter, "repos", &mut config.repos, remote_label, ask_remote)?;
     edit_list(prompter, "copy", &mut config.copy, copy_label, ask_copy)?;
     edit_list(prompter, "setup", &mut config.setup, |command| command.clone(), ask_setup)?;
@@ -255,37 +353,58 @@ pub fn new_config(path: &Path, prompter: &mut dyn Prompter) -> anyhow::Result<()
     Ok(())
 }
 
-/// A value without a default: keep asking until something is typed.
-fn required(prompter: &mut dyn Prompter, prompt: &str) -> anyhow::Result<String> {
-    loop {
-        let answer = prompted(prompter, prompt, "")?;
-        if !answer.is_empty() {
-            return Ok(answer);
+pub fn set_config_field(
+    path: &Path,
+    argument: &str,
+    prompter: &mut dyn Prompter,
+) -> anyhow::Result<()> {
+    let (name, value) =
+        argument.split_once('=').map_or((argument, None), |(name, value)| (name, Some(value)));
+    let Some(field) = scalar_field(name) else {
+        let fields = FIELDS.iter().map(|field| field.name).collect::<Vec<_>>().join(", ");
+        anyhow::bail!("unknown field {name:?}; choose one of: {fields}");
+    };
+    let mut config = Config::load(Some(path))?;
+    if let Some(value) = value {
+        (field.set)(&mut config, value)?;
+    } else {
+        if !available() {
+            anyhow::bail!("no terminal to ask for a value; use `--set {name}=<value>`");
         }
-        tracing::warn!("{prompt} is required");
+        loop {
+            let value = prompted_with_help(prompter, name, "", field.help)?;
+            match (field.set)(&mut config, &value) {
+                Ok(()) => break,
+                Err(err) => tracing::warn!("{err}"),
+            }
+        }
     }
+    save_and_reload(&mut config, path)
 }
 
 /// Labels of the editor menu, in the order of [`Field`]; the last entry leaves.
 fn menu(config: &Config) -> Vec<(Field, String)> {
-    vec![
-        (Field::WorkDir, format!("{:<18}{}", "work_dir", path_text(&config.work_dir))),
-        (Field::BranchTemplate, format!("{:<18}{}", "branch_template", config.branch_template)),
-        (Field::Base, format!("{:<18}{}", "base", config.base)),
-        (Field::RepoDirs, format!("{:<18}{}", "repo_dirs", count(config.repo_dirs.len()))),
-        (
-            Field::CloneDir,
-            format!(
-                "{:<18}{}",
-                "clone_dir",
-                config.clone_dir.as_deref().map(path_text).unwrap_or_default()
-            ),
-        ),
-        (Field::Repos, format!("{:<18}{}", "repos", count(config.repos.len()))),
-        (Field::Copy, format!("{:<18}{}", "copy", count(config.copy.len()))),
-        (Field::Setup, format!("{:<18}{}", "setup", count(config.setup.len()))),
-        (Field::Exit, "← exit".to_string()),
+    [
+        Field::Scalar(&WORK_DIR),
+        Field::Scalar(&BRANCH_TEMPLATE),
+        Field::Scalar(&BASE),
+        Field::RepoDirs,
+        Field::Scalar(&CLONE_DIR),
+        Field::Repos,
+        Field::Copy,
+        Field::Setup,
+        Field::Exit,
     ]
+    .into_iter()
+    .map(|field| {
+        let label = if matches!(field, Field::Exit) {
+            "← exit".to_string()
+        } else {
+            format!("{:<18}{:<24}{}", field.name(), field.value(config), field.help())
+        };
+        (field, label)
+    })
+    .collect()
 }
 
 fn count(entries: usize) -> String {
@@ -322,30 +441,20 @@ fn edit_list<T>(
     }
 }
 
-fn edit_string(
+fn edit_scalar(
     prompter: &mut dyn Prompter,
-    prompt: &str,
-    value: &mut String,
+    config: &mut Config,
+    field: &'static ScalarField,
 ) -> anyhow::Result<()> {
-    *value = answer_or_current(prompter, prompt, value)?;
-    Ok(())
-}
-
-fn edit_path(prompter: &mut dyn Prompter, prompt: &str, path: &mut PathBuf) -> anyhow::Result<()> {
-    *path = PathBuf::from(answer_or_current(prompter, prompt, &path_text(path))?);
-    Ok(())
-}
-
-/// `None` when the answer is empty.
-fn edit_optional_path(
-    prompter: &mut dyn Prompter,
-    prompt: &str,
-    path: &mut Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let current = path.as_deref().map(path_text).unwrap_or_default();
-    let answer = answer_or_current(prompter, prompt, &current)?;
-    *path = (!answer.is_empty()).then(|| PathBuf::from(answer));
-    Ok(())
+    let current = (field.value)(config);
+    loop {
+        let answer = prompted_with_help(prompter, field.name, &current, field.help)?;
+        let value = if answer.is_empty() { &current } else { &answer };
+        match (field.set)(config, value) {
+            Ok(()) => return Ok(()),
+            Err(err) => tracing::warn!("{err}"),
+        }
+    }
 }
 
 fn ask_dir(prompter: &mut dyn Prompter) -> anyhow::Result<Option<PathBuf>> {
@@ -392,18 +501,17 @@ fn copy_label(copy: &CopySpec) -> String {
     }
 }
 
-/// One text answer, trimmed; empty keeps `current`.
-fn answer_or_current(
-    prompter: &mut dyn Prompter,
-    prompt: &str,
-    current: &str,
-) -> anyhow::Result<String> {
-    let answer = prompted(prompter, prompt, current)?;
-    Ok(if answer.is_empty() { current.to_string() } else { answer })
+fn prompted(prompter: &mut dyn Prompter, prompt: &str, initial: &str) -> anyhow::Result<String> {
+    prompted_with_help(prompter, prompt, initial, INPUT_HELP)
 }
 
-fn prompted(prompter: &mut dyn Prompter, prompt: &str, initial: &str) -> anyhow::Result<String> {
-    let answer = prompter.input(prompt, initial)?.ok_or_else(abort)?;
+fn prompted_with_help(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    initial: &str,
+    help: &str,
+) -> anyhow::Result<String> {
+    let answer = prompter.input(prompt, initial, help)?.ok_or_else(abort)?;
     Ok(answer.trim().to_string())
 }
 
@@ -450,11 +558,12 @@ mod tests {
     struct Script {
         answers: VecDeque<Answer>,
         prompts: Vec<String>,
+        help_messages: Vec<String>,
     }
 
     impl Script {
         fn new(answers: Vec<Answer>) -> Script {
-            Script { answers: answers.into(), prompts: Vec::new() }
+            Script { answers: answers.into(), prompts: Vec::new(), help_messages: Vec::new() }
         }
 
         fn next(&mut self, prompt: &str) -> Answer {
@@ -464,7 +573,13 @@ mod tests {
     }
 
     impl Prompter for Script {
-        fn input(&mut self, prompt: &str, _initial: &str) -> anyhow::Result<Option<String>> {
+        fn input(
+            &mut self,
+            prompt: &str,
+            _initial: &str,
+            help: &str,
+        ) -> anyhow::Result<Option<String>> {
+            self.help_messages.push(help.to_string());
             match self.next(prompt) {
                 Answer::Input(value) => Ok(Some(value)),
                 Answer::Abort => Ok(None),
@@ -533,6 +648,29 @@ mod tests {
         assert!(plain.selected_option.is_none());
         assert_eq!(colored.help_message.fg, Some(Color::DarkGrey));
         assert!(colored.prompt.att.contains(Attributes::BOLD));
+    }
+
+    #[test]
+    fn scalar_fields_set_real_config_values() {
+        let values = ["tickets", "ticket/{ticket}", "main", "clones"];
+        let mut config = Config::new(PathBuf::from("old"));
+        for (field, value) in FIELDS.iter().zip(values) {
+            (field.set)(&mut config, value).expect("set field");
+            let yaml = config.to_yaml().expect("yaml");
+            assert!(
+                yaml.lines().any(|line| line.starts_with(&format!("{}:", field.name))),
+                "missing {} in {yaml}",
+                field.name
+            );
+        }
+    }
+
+    #[test]
+    fn menu_shows_field_help() {
+        let config = Config::new(PathBuf::from("tickets"));
+        let items = menu(&config);
+        assert!(items[0].1.contains(WORK_DIR.help));
+        assert!(items[3].1.contains(Field::RepoDirs.help()));
     }
 
     #[test]
@@ -695,6 +833,8 @@ mod tests {
             Answer::Select(2), // setup: back
         ]);
         new_config(&path, &mut script).expect("new config");
+        assert!(script.help_messages.contains(&WORK_DIR.help.to_string()));
+        assert!(script.help_messages.contains(&BRANCH_TEMPLATE.help.to_string()));
 
         let reloaded = Config::load(Some(&path)).expect("reload");
         assert_eq!(reloaded.work_dir, work);
