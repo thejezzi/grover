@@ -129,7 +129,7 @@ is no prompt, and the command fails with a message instead of waiting forever.
 
 ## The daily loop
 
-Once tickets exist, three commands cover the daily loop. `grover list` prints the names of
+Once tickets exist, four commands cover the daily loop. `grover list` prints the names of
 your ticket folders, one per line and sorted, which makes it useful for a quick look and for
 scripting:
 
@@ -151,6 +151,20 @@ With an argument the ticket may be abbreviated or misspelled, as long as one exi
 matches. Without an argument, `grover path` looks at the current directory: if you stand
 somewhere inside a ticket folder, it prints that ticket. So `cd "$(grover path)"` also works
 from inside a ticket.
+
+`grover status` shows what is happening in the worktrees of a ticket: the branch, the
+distance to the upstream, and the number of changed files. It reads the worktrees directly,
+so it works from anywhere inside the ticket:
+
+```console
+$ grover status PROJ-123
+repo   branch             ahead/behind  dirty
+api    ticket/PROJ-123    +2/-0         3 files
+web    ticket/PROJ-123    -             clean
+```
+
+The `-` under `ahead/behind` means the branch has no upstream yet, which is normal for a
+fresh ticket branch.
 
 `grover rm` removes a ticket again. That means, in this order: each worktree and its branch,
 the files `grover` copied in, and finally the ticket folder itself:

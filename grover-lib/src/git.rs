@@ -99,6 +99,33 @@ pub fn branch_delete(repo: &Path, branch: &str, force: bool) -> Result<()> {
     run(cmd, format!("branch delete {branch} in {}", repo.display()))
 }
 
+/// Changed files in a worktree: `git status --porcelain` prints one line per file.
+pub fn changed_files(worktree: &Path) -> Result<usize> {
+    let mut cmd = git(worktree);
+    cmd.args(["status", "--porcelain"]);
+    let out = stdout(cmd, format!("status in {}", worktree.display()))?;
+    Ok(out.lines().filter(|line| !line.is_empty()).count())
+}
+
+/// Commits ahead of and behind the upstream; `None` without an upstream.
+pub fn ahead_behind(worktree: &Path) -> Result<Option<(u64, u64)>> {
+    let mut cmd = git(worktree);
+    cmd.args(["rev-list", "--left-right", "--count", "@{u}...@"]);
+    let out = output(cmd)?;
+    // A fresh ticket branch has no upstream; rev-list fails instead of counting.
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut counts = text.split_whitespace();
+    let behind = counts.next().and_then(|count| count.parse().ok());
+    let ahead = counts.next().and_then(|count| count.parse().ok());
+    Ok(match (behind, ahead) {
+        (Some(behind), Some(ahead)) => Some((ahead, behind)),
+        _ => None,
+    })
+}
+
 /// Without prompt: missing credentials should fail, not hang.
 fn output(mut cmd: Command) -> Result<Output> {
     cmd.env("GIT_TERMINAL_PROMPT", "0").output().map_err(Error::Spawn)

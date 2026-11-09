@@ -132,7 +132,7 @@ ambiguous — that is a feature, not a bug.
 
 One command deliberately opts out: `grover rm` resolves a ticket name exactly, because
 deleting the wrong ticket is not a mistake a candidate list can fix. Reading commands such
-as `grover path` do use the fuzzy match.
+as `grover path` and `grover status` do use the fuzzy match.
 
 ## Terminal or script
 
@@ -155,10 +155,10 @@ select all or none. A cancelled prompt never leaves a half-written ticket behind
 ## Output and exit codes
 
 `grover` separates data from commentary. Stdout carries the result of the command: the
-ticket folder for `new`, the ticket names for `list`, the folder for `path`, YAML for
-`config --show`, a path for `config --path`, a script for `completions`. Everything else —
-progress messages, warnings, errors — goes to stderr at a level you control with `-q` and
-`-v` or the `GROVER_LOG` environment variable.
+ticket folder for `new`, the ticket names for `list`, the folder for `path`, the table for
+`status`, YAML for `config --show`, a path for `config --path`, a script for `completions`.
+Everything else — progress messages, warnings, errors — goes to stderr at a level you
+control with `-q` and `-v` or the `GROVER_LOG` environment variable.
 
 Exit codes follow the usual convention. `0` means success, including a run that skipped
 everything because it was already there. `1` means the command ran and failed, or was

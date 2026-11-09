@@ -5,12 +5,13 @@ codes. It assumes the vocabulary from [Concepts](concepts.md): ticket, slug, rep
 worktree, branch, base ref. If a sentence here uses one of those terms before you have read
 that page, the link is the place to go.
 
-`grover` is a single binary with six subcommands:
+`grover` is a single binary with seven subcommands:
 
 ```text
 grover new [<ticket>] [-r|--repo <name>]... [-a|--all] [-n|--dry-run]
 grover list
 grover path [<ticket>]
+grover status [<ticket>]
 grover rm [<ticket>] [-f|--force] [-n|--dry-run]
 grover config [-p|--path] [-s|--show] [-i|--init [--force]]
 grover completions <shell>
@@ -214,6 +215,40 @@ $ cd "$(grover path)"           # from anywhere inside a ticket
 The no-argument case compares the current directory with `work_dir` as written, without
 resolving symbolic links. If `work_dir` is reached through a symlink, the no-argument form
 can report that the directory is not below `work_dir`; pass the ticket name instead.
+
+## grover status
+
+```text
+grover status [<ticket>]
+```
+
+`status` prints the state of every worktree in a ticket as a table:
+
+```console
+$ grover status PROJ-123
+repo   branch             ahead/behind  dirty
+api    ticket/PROJ-123    +2/-0         3 files
+web    ticket/PROJ-123    -             clean
+```
+
+| Column | Meaning |
+| `repo` | The folder name of the worktree, which is the repository name |
+| `branch` | The branch checked out there; `HEAD` when HEAD is detached |
+| `ahead/behind` | Commits ahead of and behind the upstream, such as `+2/-0`; `-` without one |
+| `dirty` | `clean`, or the number of changed files reported by `git status` |
+
+The argument is matched like `path`: normalized to a slug, then exact, then fuzzy when
+exactly one ticket fits. Without an argument the ticket is the one above the current
+working directory, so `grover status` works from anywhere inside a ticket. Only the direct
+children of the ticket folder that are worktrees are read; a notes file or a foreign
+directory is ignored.
+
+Each row is three git calls: `git rev-parse --abbrev-ref HEAD` for the branch,
+`git status --porcelain` for the changed files, and
+`git rev-list --left-right --count @{u}...@` for the upstream distance. A fresh ticket
+branch has no upstream, so the `ahead/behind` column shows `-`; that is the normal case,
+not an error. The table goes to stdout because it is the result of the command. There is no
+`--json` and no column option; the output is meant to be read, not parsed.
 
 ## grover rm
 

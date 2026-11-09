@@ -107,6 +107,7 @@ hanging, so `grover new` is safe inside agents and CI.
 | `grover new`         | Create a ticket folder with one worktree per selected repository |
 | `grover list`        | Print the names of the existing ticket folders                   |
 | `grover path`        | Print the folder of one ticket                                   |
+| `grover status`      | Show branch, upstream distance and dirty files per worktree      |
 | `grover rm`          | Remove a ticket: worktrees, branches, copies, then the folder    |
 | `grover config`      | Edit the config, show it, or write a new one                     |
 | `grover completions` | Print a shell completion script                                  |
@@ -141,9 +142,9 @@ The [docs](docs/README.md) folder explains the whole tool:
 
 ## Status
 
-Version 0.1.0. `new`, `list`, `path`, `rm`, `config` and `completions` are implemented.
-A `status` command and per-worktree setup commands are planned, not shipped; the design
-notes live in [PLAN.md](PLAN.md).
+Version 0.1.0. `new`, `list`, `path`, `status`, `rm`, `config` and `completions` are
+implemented. Per-worktree setup commands are planned, not shipped; the design notes live in
+[PLAN.md](PLAN.md).
 
 ## Development
 

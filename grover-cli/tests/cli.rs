@@ -221,3 +221,47 @@ fn path_prints_the_ticket_dir_from_the_argument_or_the_cwd() {
     assert_eq!(outside.status.code(), Some(1));
     assert_eq!(out(&outside), "", "stdout stays empty");
 }
+
+#[test]
+fn status_prints_a_table_for_a_clean_and_a_dirty_repo() {
+    let (root, config) = fixture();
+    let web = root.path().join("code/web");
+    fs::create_dir_all(&web).expect("web");
+    git(&web, &["init", "-q"]);
+    git(&web, &["commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-r", "web", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let ticket = root.path().join("tickets/PROJ-1");
+    fs::write(ticket.join("web/notes.txt"), "uncommitted").expect("dirty");
+    fs::write(ticket.join("notes.txt"), "not a repo").expect("foreign");
+
+    let listed = run(root.path(), &["status", "PROJ-1", "-c", &config]);
+    assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
+    assert_eq!(
+        out(&listed),
+        "repo  branch         ahead/behind  dirty
+\
+         api   ticket/PROJ-1  -             clean
+\
+         web   ticket/PROJ-1  -             1 file"
+    );
+
+    let inside = run(&ticket.join("web"), &["status", "-c", &config]);
+    assert_eq!(inside.status.code(), Some(0), "{}", err(&inside));
+    assert_eq!(out(&inside), out(&listed));
+}
+
+#[test]
+fn status_without_a_ticket_outside_the_work_dir_fails() {
+    let (root, config) = fixture();
+    let outside = run(root.path(), &["status", "-c", &config]);
+    assert_eq!(outside.status.code(), Some(1));
+    assert_eq!(out(&outside), "", "stdout stays empty");
+
+    let created = run(root.path(), &["new", "PROJ-1", "-r", "api", "-c", &config]);
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    let unknown = run(root.path(), &["status", "ZZZ-9", "-c", &config]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(err(&unknown).contains("similar"), "{}", err(&unknown));
+}

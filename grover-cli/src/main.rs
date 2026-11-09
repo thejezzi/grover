@@ -63,6 +63,11 @@ enum Command {
         /// Ticket, e.g. PROJ-123; the ticket above the cwd when omitted
         ticket: Option<String>,
     },
+    /// Show branch, upstream distance and dirty files of every worktree
+    Status {
+        /// Ticket, e.g. PROJ-123; the ticket above the cwd when omitted
+        ticket: Option<String>,
+    },
     /// Edit the config interactively on a terminal
     Config {
         /// Show the config location only
@@ -129,11 +134,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Path { ticket } => {
             let config = Config::load(config_path)?;
-            let dir = match ticket {
-                Some(ticket) => plan::find_ticket(&config, &ticket)?,
-                None => plan::ticket_above(&config, &std::env::current_dir()?)?,
-            };
-            println!("{}", dir.display());
+            println!("{}", ticket_dir(&config, ticket.as_deref())?.display());
+        }
+        Command::Status { ticket } => {
+            let config = Config::load(config_path)?;
+            let dir = ticket_dir(&config, ticket.as_deref())?;
+            print_status(&plan::statuses(&dir)?);
         }
         Command::Config { path, show, init, force } => {
             config_cmd(config_path, path, show, init, force)?
@@ -172,6 +178,50 @@ fn rm_ticket(config: &Config, ticket: Option<String>) -> anyhow::Result<String> 
         anyhow::bail!("no tickets in {}", config.work_dir.display());
     }
     tui::pick_ticket(&mut tui::Tui, &tickets)
+}
+
+/// Ticket directory for a read-only command: the argument, else the ticket above the cwd.
+fn ticket_dir(config: &Config, ticket: Option<&str>) -> anyhow::Result<PathBuf> {
+    match ticket {
+        Some(ticket) => Ok(plan::find_ticket(config, ticket)?),
+        None => Ok(plan::ticket_above(config, &std::env::current_dir()?)?),
+    }
+}
+
+/// The `status` table: header plus one row per worktree, aligned, no trailing spaces.
+fn print_status(rows: &[plan::RepoStatus]) {
+    let mut table: Vec<[String; 4]> =
+        vec![["repo".into(), "branch".into(), "ahead/behind".into(), "dirty".into()]];
+    for row in rows {
+        table.push([
+            row.name.clone(),
+            row.branch.clone().unwrap_or_else(|| "HEAD".to_string()),
+            match (row.ahead, row.behind) {
+                (Some(ahead), Some(behind)) => format!("+{ahead}/-{behind}"),
+                _ => "-".to_string(),
+            },
+            match row.dirty {
+                0 => "clean".to_string(),
+                1 => "1 file".to_string(),
+                files => format!("{files} files"),
+            },
+        ]);
+    }
+    let mut widths = [0; 3];
+    for row in &table {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    for row in &table {
+        let mut line = String::new();
+        for (index, cell) in row[..3].iter().enumerate() {
+            let width = widths[index];
+            line.push_str(&format!("{cell:<width$}  "));
+        }
+        line.push_str(&row[3]);
+        println!("{line}");
+    }
 }
 
 /// `config`: the location, the resolved YAML, the editor, or a new config from prompts.

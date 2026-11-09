@@ -1,4 +1,4 @@
-//! Plan a ticket directory (`new`), then list, resolve and remove tickets.
+//! Plan a ticket directory (`new`), then list, resolve, inspect and remove tickets.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -245,6 +245,52 @@ pub fn remove(config: &Config, ticket_dir: &Path, force: bool, dry_run: bool) ->
         tracing::warn!("{} kept: {err}", ticket_dir.display());
     }
     Ok(())
+}
+
+/// One worktree of a ticket and what git says about it.
+#[derive(Debug)]
+pub struct RepoStatus {
+    pub name: String,
+    /// `None` when HEAD is detached.
+    pub branch: Option<String>,
+    /// Commits ahead of the upstream; `None` without one.
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
+    pub dirty: usize,
+}
+
+/// State of every worktree in the ticket, sorted by repository name.
+pub fn statuses(ticket_dir: &Path) -> Result<Vec<RepoStatus>> {
+    let mut statuses = Vec::new();
+    for entry in fs::read_dir(ticket_dir)
+        .map_err(|source| Error::Io { path: ticket_dir.to_path_buf(), source })?
+    {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                tracing::warn!("{}: {err}", ticket_dir.display());
+                continue;
+            }
+        };
+        // A `.git` file is a worktree; foreign entries are ignored.
+        if !path.join(".git").is_file() {
+            continue;
+        }
+        let (ahead, behind) = match git::ahead_behind(&path)? {
+            Some((ahead, behind)) => (Some(ahead), Some(behind)),
+            None => (None, None),
+        };
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned());
+        statuses.push(RepoStatus {
+            name: name.unwrap_or_default(),
+            branch: git::head_branch(&path)?,
+            ahead,
+            behind,
+            dirty: git::changed_files(&path)?,
+        });
+    }
+    statuses.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(statuses)
 }
 
 /// One worktree and its branch; branch and repo come from the worktree itself.
