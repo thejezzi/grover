@@ -8,11 +8,13 @@ use grover_lib::config::{Config, CopySpec, RemoteRepo};
 use grover_lib::error::Error;
 use grover_lib::repo::{self, Source};
 use inquire::ui::{Attributes, Color, ErrorMessageRenderConfig, RenderConfig, StyleSheet, Styled};
-use inquire::{Confirm, InquireError, MultiSelect, Select, Text};
+use inquire::{Autocomplete, Confirm, CustomUserError, InquireError, MultiSelect, Select, Text};
 
 const PAGE_SIZE: usize = 12;
+const MAX_SUGGESTIONS: usize = 1000;
 const INPUT_HELP: &str = "enter confirm · esc cancel";
 const LIST_INPUT_HELP: &str = "enter confirm · esc back to the list";
+const PATH_INPUT_HELP: &str = "tab complete · ↑↓ pick a suggestion · enter confirm · esc back";
 const SELECT_HELP: &str = "↑↓ move · type filter · enter select · esc cancel";
 const MULTI_SELECT_HELP: &str =
     "↑↓ move · space pick · →/← all/none · type filter · enter done · esc cancel";
@@ -26,6 +28,15 @@ pub fn available() -> bool {
 /// What the flows ask; `None` means the user went back one step.
 pub trait Prompter {
     fn input(&mut self, prompt: &str, default: &str, help: &str) -> anyhow::Result<Option<String>>;
+    /// Like [`Prompter::input`], with tab completion for paths; `files` also
+    /// suggests plain files, otherwise only folders.
+    fn input_path(
+        &mut self,
+        prompt: &str,
+        default: &str,
+        help: &str,
+        files: bool,
+    ) -> anyhow::Result<Option<String>>;
     fn select(&mut self, prompt: &str, items: &[String]) -> anyhow::Result<Option<usize>>;
     fn confirm(&mut self, prompt: &str, default: bool) -> anyhow::Result<bool>;
     fn multi_select(
@@ -43,6 +54,23 @@ impl Prompter for Tui {
         let answer = Text::new(prompt)
             .with_default(default)
             .with_help_message(help)
+            .with_render_config(theme())
+            .prompt_skippable();
+        cancelled(answer)
+    }
+
+    fn input_path(
+        &mut self,
+        prompt: &str,
+        default: &str,
+        help: &str,
+        files: bool,
+    ) -> anyhow::Result<Option<String>> {
+        let answer = Text::new(prompt)
+            .with_default(default)
+            .with_help_message(help)
+            .with_autocomplete(PathCompleter::new(files))
+            .with_page_size(PAGE_SIZE)
             .with_render_config(theme())
             .prompt_skippable();
         cancelled(answer)
@@ -139,6 +167,89 @@ fn interrupted(err: InquireError) -> anyhow::Error {
     }
 }
 
+/// Tab completion for paths: the parent directory is listed, names are matched
+/// against the last segment. A typed `~` stays a `~` in the suggestions.
+#[derive(Clone)]
+struct PathCompleter {
+    cwd: PathBuf,
+    /// `false` for folder prompts: only directories are suggested.
+    files: bool,
+}
+
+impl PathCompleter {
+    fn new(files: bool) -> PathCompleter {
+        PathCompleter { cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), files }
+    }
+
+    /// Typed prefix (through the last `/`), the directory to read, and the
+    /// partial last segment. A lone `~` lists the home directory.
+    fn split(&self, input: &str) -> (String, PathBuf, String) {
+        match input.rfind('/') {
+            Some(index) => {
+                let prefix = &input[..=index];
+                (prefix.to_string(), self.lookup(prefix), input[index + 1..].to_string())
+            }
+            None if input == "~" => ("~/".to_string(), self.lookup("~/"), String::new()),
+            None => (String::new(), self.cwd.clone(), input.to_string()),
+        }
+    }
+
+    /// The typed prefix as a real directory to read; `~` only exists as text.
+    fn lookup(&self, prefix: &str) -> PathBuf {
+        if prefix.is_empty() {
+            return self.cwd.clone();
+        }
+        if let Some(rest) = prefix.strip_prefix('~') {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(rest.trim_start_matches('/'));
+            }
+        }
+        let path = PathBuf::from(prefix);
+        if path.is_absolute() { path } else { self.cwd.join(path) }
+    }
+
+    /// Candidate entries for `input`, as they would be shown to the user.
+    fn suggestions(&self, input: &str) -> Vec<String> {
+        let (prefix, dir, partial) = self.split(input);
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| self.files || entry.path().is_dir())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&partial))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names.truncate(MAX_SUGGESTIONS);
+        names.into_iter().map(|name| format!("{prefix}{name}")).collect()
+    }
+}
+
+impl Autocomplete for PathCompleter {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        Ok(self.suggestions(input))
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        highlighted: Option<String>,
+    ) -> Result<Option<String>, CustomUserError> {
+        if let Some(suggestion) = highlighted {
+            return Ok(Some(suggestion));
+        }
+        let suggestions = self.suggestions(input);
+        let Some(first) = suggestions.first() else {
+            return Ok(None);
+        };
+        let prefix = suggestions.iter().fold(first.clone(), |common, next| {
+            common.chars().zip(next.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a).collect()
+        });
+        Ok((prefix.chars().count() > input.chars().count()).then_some(prefix))
+    }
+}
+
 /// Fills `new` inputs: prompts only for what is missing.
 pub fn complete(
     prompter: &mut dyn Prompter,
@@ -206,6 +317,8 @@ fn repo_label(repo: &repo::Repo, width: usize) -> String {
 struct ScalarField {
     name: &'static str,
     help: &'static str,
+    /// `Some(true)` for file paths, `Some(false)` for folders, `None` for text.
+    path: Option<bool>,
     value: fn(&Config) -> String,
     set: fn(&mut Config, &str) -> anyhow::Result<()>,
 }
@@ -213,24 +326,28 @@ struct ScalarField {
 static WORK_DIR: ScalarField = ScalarField {
     name: "work_dir",
     help: "Required; ticket folder parent, e.g. ~/work/tickets.",
+    path: Some(false),
     value: work_dir_value,
     set: set_work_dir,
 };
 static BRANCH_TEMPLATE: ScalarField = ScalarField {
     name: "branch_template",
     help: "Branch pattern, e.g. ticket/{ticket}; Enter keeps it.",
+    path: None,
     value: |config| config.branch_template.clone(),
     set: set_branch_template,
 };
 static BASE: ScalarField = ScalarField {
     name: "base",
     help: "Fallback refs in order, e.g. main|master|HEAD; Enter keeps it.",
+    path: None,
     value: |config| config.base.clone(),
     set: set_base,
 };
 static CLONE_DIR: ScalarField = ScalarField {
     name: "clone_dir",
     help: "Remote clone folder; empty clears it.",
+    path: Some(false),
     value: |config| config.clone_dir.as_deref().map(path_text).unwrap_or_default(),
     set: set_clone_dir,
 };
@@ -468,7 +585,7 @@ pub fn set_config_field(
             anyhow::bail!("no terminal to ask for a value; use `--set {name}=<value>`");
         }
         loop {
-            let answer = prompted_with_help(prompter, name, "", field.help)?;
+            let answer = prompt_value(prompter, field, name, "")?;
             let value = answer.ok_or_else(abort)?;
             match (field.set)(&mut config, &value) {
                 Ok(()) => break,
@@ -549,7 +666,8 @@ fn edit_scalar(
 ) -> anyhow::Result<bool> {
     let current = (field.value)(config);
     loop {
-        let Some(answer) = prompted_with_help(prompter, label, &current, field.help)? else {
+        let answer = prompt_value(prompter, field, label, &current)?;
+        let Some(answer) = answer else {
             return Ok(false);
         };
         let value = if answer.is_empty() { &current } else { &answer };
@@ -560,9 +678,23 @@ fn edit_scalar(
     }
 }
 
+/// One text answer for a scalar field; path fields offer tab completion.
+fn prompt_value(
+    prompter: &mut dyn Prompter,
+    field: &ScalarField,
+    prompt: &str,
+    default: &str,
+) -> anyhow::Result<Option<String>> {
+    let answer = match field.path {
+        Some(files) => prompter.input_path(prompt, default, field.help, files)?,
+        None => prompter.input(prompt, default, field.help)?,
+    };
+    Ok(answer.map(|answer| answer.trim().to_string()))
+}
+
 /// `None` means Esc: no entry, back to the list.
 fn ask_dir(prompter: &mut dyn Prompter) -> anyhow::Result<Option<PathBuf>> {
-    let answer = prompted(prompter, "repo dir", "")?;
+    let answer = prompted_path(prompter, "repo dir", "", false)?;
     Ok(answer.filter(|answer| !answer.is_empty()).map(PathBuf::from))
 }
 
@@ -580,12 +712,13 @@ fn ask_remote(prompter: &mut dyn Prompter) -> anyhow::Result<Option<RemoteRepo>>
 }
 
 fn ask_copy(prompter: &mut dyn Prompter) -> anyhow::Result<Option<CopySpec>> {
-    let Some(from) = prompted(prompter, "from", "")? else {
+    let Some(from) = prompted_path(prompter, "from", "", true)? else {
         return Ok(None);
     };
     if from.is_empty() {
         return Ok(None);
     }
+    // `to` is relative to the ticket folder, which does not exist yet: no completion.
     let Some(to) = prompted(prompter, "to (empty = file name)", "")? else {
         return Ok(None);
     };
@@ -619,6 +752,17 @@ fn prompted(
     default: &str,
 ) -> anyhow::Result<Option<String>> {
     prompted_with_help(prompter, prompt, default, LIST_INPUT_HELP)
+}
+
+/// A path prompt with tab completion; `None` is Esc.
+fn prompted_path(
+    prompter: &mut dyn Prompter,
+    prompt: &str,
+    default: &str,
+    files: bool,
+) -> anyhow::Result<Option<String>> {
+    let answer = prompter.input_path(prompt, default, PATH_INPUT_HELP, files)?;
+    Ok(answer.map(|answer| answer.trim().to_string()))
 }
 
 fn prompted_with_help(
@@ -676,6 +820,7 @@ mod tests {
         prompts: Vec<String>,
         help_messages: Vec<String>,
         defaults: Vec<String>,
+        path_prompts: Vec<String>,
     }
 
     impl Script {
@@ -685,6 +830,7 @@ mod tests {
                 prompts: Vec::new(),
                 help_messages: Vec::new(),
                 defaults: Vec::new(),
+                path_prompts: Vec::new(),
             }
         }
 
@@ -716,6 +862,17 @@ mod tests {
                 Answer::Abort => Ok(None),
                 _ => panic!("scripted answer is not a select"),
             }
+        }
+
+        fn input_path(
+            &mut self,
+            prompt: &str,
+            default: &str,
+            help: &str,
+            _files: bool,
+        ) -> anyhow::Result<Option<String>> {
+            self.path_prompts.push(prompt.to_string());
+            self.input(prompt, default, help)
         }
 
         fn confirm(&mut self, prompt: &str, _default: bool) -> anyhow::Result<bool> {
@@ -802,6 +959,134 @@ mod tests {
         let items = menu(&config);
         assert!(items[0].1.contains(WORK_DIR.help));
         assert!(items[3].1.contains(Field::RepoDirs.help()));
+    }
+
+    /// Temporary tree with `alpha/`, `alpha-beta/` and a plain file.
+    fn completer_tree() -> (tempfile::TempDir, PathCompleter) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join("alpha")).expect("alpha");
+        fs::create_dir(tmp.path().join("alpha-beta")).expect("alpha-beta");
+        fs::write(tmp.path().join("alphafile"), "").expect("alphafile");
+        fs::create_dir(tmp.path().join("other")).expect("other");
+        let completer = PathCompleter { cwd: tmp.path().to_path_buf(), files: true };
+        (tmp, completer)
+    }
+
+    #[test]
+    fn suggestions_match_the_last_segment() {
+        let (tmp, mut completer) = completer_tree();
+        let prefix = format!("{}/alpha", tmp.path().display());
+        let mut suggestions = completer.get_suggestions(&prefix).expect("suggestions");
+        suggestions.sort();
+        let expected: Vec<String> = ["alpha", "alpha-beta", "alphafile"]
+            .iter()
+            .map(|name| format!("{}/{}", tmp.path().display(), name))
+            .collect();
+        assert_eq!(suggestions, expected);
+    }
+
+    #[test]
+    fn suggestions_of_a_bare_prefix_are_relative() {
+        let (_tmp, mut completer) = completer_tree();
+        let suggestions = completer.get_suggestions("alp").expect("suggestions");
+        assert_eq!(suggestions, ["alpha", "alpha-beta", "alphafile"]);
+    }
+
+    #[test]
+    fn folder_prompts_skip_plain_files() {
+        let (tmp, completer) = completer_tree();
+        let mut folders = PathCompleter { cwd: completer.cwd.clone(), files: false };
+        assert_eq!(folders.get_suggestions("alp").expect("suggestions"), ["alpha", "alpha-beta"]);
+        assert!(folders.get_suggestions("alphafile").expect("suggestions").is_empty());
+        assert!(tmp.path().join("alphafile").is_file());
+    }
+
+    #[test]
+    fn a_prefix_without_matches_has_no_suggestions() {
+        let (_tmp, mut completer) = completer_tree();
+        assert!(completer.get_suggestions("zzz").expect("suggestions").is_empty());
+        assert_eq!(completer.get_completion("zzz", None).expect("completion"), None);
+    }
+
+    #[test]
+    fn completion_takes_the_longest_common_prefix() {
+        let (tmp, mut completer) = completer_tree();
+        let prefix = format!("{}/alph", tmp.path().display());
+        let completion = completer.get_completion(&prefix, None).expect("completion");
+        assert_eq!(completion, Some(format!("{}/alpha", tmp.path().display())));
+    }
+
+    #[test]
+    fn a_highlighted_suggestion_wins() {
+        let (_tmp, mut completer) = completer_tree();
+        let picked = Some("alpha-beta".to_string());
+        assert_eq!(
+            completer.get_completion("al", picked).expect("completion"),
+            Some("alpha-beta".into())
+        );
+    }
+
+    #[test]
+    fn completion_never_shortens_the_input() {
+        let (_tmp, mut completer) = completer_tree();
+        assert_eq!(completer.get_completion("alpha", None).expect("completion"), None);
+    }
+
+    #[test]
+    fn tilde_stays_a_tilde_in_the_suggestions() {
+        let mut completer = PathCompleter::new(false);
+        let suggestions = completer.get_suggestions("~/.gro").expect("suggestions");
+        for suggestion in &suggestions {
+            assert!(suggestion.starts_with("~/"), "kept the shortcut: {suggestion}");
+        }
+    }
+
+    #[test]
+    fn a_lone_tilde_lists_the_home_directory() {
+        let mut completer = PathCompleter::new(false);
+        let suggestions = completer.get_suggestions("~").expect("suggestions");
+        let home = dirs::home_dir().expect("home");
+        let expected: Option<String> = fs::read_dir(&home).ok().and_then(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .min()
+                .map(|name| format!("~/{name}"))
+        });
+        assert_eq!(suggestions.first().cloned(), expected);
+    }
+
+    #[test]
+    fn path_fields_get_the_completing_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, mut config) = config_file(tmp.path());
+        let elsewhere = tmp.path().join("elsewhere");
+        let mut script = Script::new(vec![
+            Answer::Select(0), // work_dir
+            Answer::Input(elsewhere.to_str().expect("utf8").into()),
+            Answer::Select(3), // repo_dirs
+            Answer::Select(0), // add
+            Answer::Input(tmp.path().to_str().expect("utf8").into()),
+            Answer::Select(3), // back (two entries plus add and back)
+            Answer::Select(8), // exit
+        ]);
+        edit_config(&mut config, &path, &mut script).expect("edit");
+        assert_eq!(script.path_prompts, ["work_dir", "repo dir"]);
+    }
+
+    #[test]
+    fn non_path_fields_keep_the_plain_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (path, mut config) = config_file(tmp.path());
+        let mut script = Script::new(vec![
+            Answer::Select(2), // base
+            Answer::Input("develop".into()),
+            Answer::Select(8),
+        ]);
+        edit_config(&mut config, &path, &mut script).expect("edit");
+        assert!(script.path_prompts.is_empty(), "base is not a path");
+        assert_eq!(config.base, "develop");
     }
 
     #[test]

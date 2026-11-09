@@ -277,6 +277,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "dirs",
  "grover-lib",
  "inquire",
  "tempfile",

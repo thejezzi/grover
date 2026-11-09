@@ -59,7 +59,10 @@ in both worlds.
 
 Prompts are rendered on stderr, so stdout keeps carrying only the result. In a text prompt,
 Enter confirms and Esc goes back; the default value, when there is one, is shown in grey and
-is used when you press Enter without typing. In a single selection, typing filters the
+is used when you press Enter without typing. Path prompts (`work_dir`, `repo_dirs`,
+`clone_dir`, `copy.from`) complete with Tab: the entries of the typed folder are listed as
+you type, `↑`/`↓` pick one, and Tab completes to the longest common prefix when none is
+picked. A typed `~` stays a `~` in the suggestions. In a single selection, typing filters the
 entries, the up and down arrows move, Enter confirms and Esc goes back. In a multi-selection,
 typing filters too, Space toggles the entry under the cursor, the right arrow selects all
 entries, the left arrow selects none, and Enter confirms the selection.

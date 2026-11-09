@@ -51,7 +51,9 @@ The wizard asks for one value at a time, in this order: `work_dir`,
 `setup`. `work_dir` is the only value without a default: it is the folder
 where ticket folders will be created, for example `/home/you/work/tickets`.
 The other questions show their defaults in grey and accept them with Enter;
-typing replaces them. Esc goes back one field and keeps your answer.
+typing replaces them. Esc goes back one field and keeps your answer. In the
+path questions Tab completes what you typed, so `~/wo` + Tab becomes
+`~/work`.
 The four lists (`repo_dirs`, `repos`, `copy`, `setup`) are menus: choose
 `+ add` to append a value, then leave through the back entry. `setup` commands
 run in order after each new worktree. Their output goes to stderr, so stdout

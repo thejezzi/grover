@@ -1,8 +1,7 @@
 # PLAN — grover
 
-Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, `make check` grün (100 Tests). Abschnitt 12
-ist die priorisierte Liste der nächsten Features; 12.5 und 12.8 bekommen vor dem Code ein
-Go.
+Status: Abschnitte 1–11 und 12.1–12.7 umgesetzt, `make check` grün (111 Tests). Abschnitt 12
+ist die priorisierte Liste der nächsten Features; 12.8 bekommt vor dem Code ein Go.
 Regeln für die Umsetzung stehen in [AGENTS.md](AGENTS.md).
 
 ## 1. Ziel
@@ -289,6 +288,7 @@ grover completions <bash|zsh|fish|...>
 - [x] 12.4 Setup-Befehle nach Worktree-Erstellung (85 Tests)
 - [x] 12.6 `--set`, Feldhilfe in Editor und Wizard (92 Tests)
 - [x] 12.7 Esc als „zurück“, Defaults, Schritt-Zähler, Schlussfrage (100 Tests)
+- [x] 12.5 Pfad-Autovervollständigung per Tab (111 Tests)
 - [ ] Durchlauf mit deiner echten Config
 
 ## 11. Mini-TUI (`config`, `new`)
@@ -376,13 +376,13 @@ $ grover new
 
 ## 12. Roadmap (in dieser Reihenfolge)
 
-Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.4, 12.6 und 12.7 sind
-umgesetzt; 12.5 und 12.8 bekommen jeweils vor dem Code ihr Go. Die Tests aus Abschnitt 8
-gelten mit. 12.9 ist Backlog, 12.10 ist die Absage.
+Die Reihenfolge ist Nutzen pro Aufwand, nicht Wunschliste. 12.1–12.7 sind umgesetzt; 12.8
+bekommt vor dem Code sein Go. Die Tests aus Abschnitt 8 gelten mit. 12.9 ist Backlog, 12.10
+ist die Absage.
 
 12.5–12.7 sind ein Paket (Bequemlichkeit des Wizards) und fassen dieselbe `Prompter`-API
-an; gebaut werden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
-vorigen aufsetzt. 12.6 und 12.7 sind umgesetzt, als nächstes folgt 12.5.
+an; gebaut wurden sie in der Reihenfolge 12.6 → 12.7 → 12.5, damit jede Stufe auf der
+vorigen aufsetzt. Alle drei sind umgesetzt.
 
 ### 12.1 `grover rm [<ticket>]` — aufräumen (umgesetzt)
 
@@ -500,10 +500,10 @@ setup:                               # nach jedem neuen Worktree, cwd = Worktree
 - Tests: Befehl legt eine Datei im Worktree an, Fehlschlag ist eine Warnung ohne Abbruch,
   `--dry-run` führt nichts aus, übersprungener Worktree bekommt kein Setup.
 
-### 12.5 Pfad-Autovervollständigung
+### 12.5 Pfad-Autovervollständigung (umgesetzt)
 
-Pfad-Prompts (`work_dir`, `repo_dirs`, `clone_dir`, `copy.from`, `copy.to`) tippt man heute
-von Hand. `inquire` bringt Tab-Completion mit, es fehlt nur ein `Autocomplete`.
+Pfad-Prompts (`work_dir`, `repo_dirs`, `clone_dir`, `copy.from`) tippt man sonst von Hand.
+`inquire` bringt Tab-Completion mit, es fehlte nur ein `Autocomplete`.
 
 - `PathCompleter { cwd: PathBuf }` in `tui.rs` implementiert `inquire::Autocomplete` (muss
   `Clone` sein): `get_suggestions` listet die Einträge des Verzeichnisses aus der Eingabe,
@@ -515,6 +515,7 @@ von Hand. `inquire` bringt Tab-Completion mit, es fehlt nur ein `Autocomplete`.
 - Relative Eingaben gelten ab dem Arbeitsverzeichnis, `../` und `/` funktionieren. Mehr als
   1000 Vorschläge werden nicht gelistet, damit die Liste bedienbar bleibt.
 - `Prompter::input_path` ist `input` (12.7) plus Completer; nur Pfad-Felder nutzen ihn.
+  `copy.to` bleibt ohne Completion: das Ziel liegt im Ticket-Ordner, den es noch nicht gibt.
 - Tests: Vorschläge zu einem Präfix, längstes gemeinsames Präfix, `~`-Rundlauf, ein Präfix
   ohne Treffer liefert keine Vorschläge.
 
