@@ -41,12 +41,9 @@ enum Command {
         /// Every known repo
         #[arg(short, long, conflicts_with = "repo")]
         all: bool,
-        /// Ticket title, e.g. "Login redirect loop"; needs --slug-from-title
+        /// Ticket title, e.g. "Login redirect loop"; a slug of it joins the branch name
         #[arg(short = 't', long, value_name = "TEXT")]
         title: Option<String>,
-        /// Put a slug of the title into the branch name
-        #[arg(long, requires = "title")]
-        slug_from_title: bool,
         /// Show only, write nothing
         #[arg(short = 'n', long)]
         dry_run: bool,
@@ -111,10 +108,10 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let config_path = cli.config.as_deref();
     match cli.command {
-        Command::New { ticket, repo, all, title, slug_from_title, dry_run } => {
+        Command::New { ticket, repo, all, title, dry_run } => {
             let config = Config::load(config_path)?;
             let (ticket, repos) = new_inputs(&config, ticket, repo, all)?;
-            let request = Request { ticket, repos, all, title, slug_from_title };
+            let request = Request { ticket, repos, all, title };
             let plan = Plan::build(&config, &request)?;
             let report = plan.apply(dry_run)?;
             if dry_run {

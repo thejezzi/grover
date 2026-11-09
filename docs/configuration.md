@@ -112,9 +112,8 @@ time because every ticket would otherwise share one branch name.
 The template can contain slashes, which git reads as branch name separators. It is a plain
 string replacement, not a template language: there is exactly one token and no conditionals.
 
-`grover new --title "Login redirect loop" --slug-from-title` replaces `{ticket}` with the
-ticket slug plus a slug of the title instead, so the branch becomes
-`ticket/PROJ-123-login-redirect-loop`. See
+`grover new --title "Login redirect loop"` replaces `{ticket}` with the ticket slug plus a
+slug of the title, so the branch becomes `ticket/PROJ-123-login-redirect-loop`. See
 [the command reference](commands.md#a-branch-name-that-says-what-the-ticket-is-about) for how
 that slug is built. The ticket folder keeps the plain ticket slug.
 

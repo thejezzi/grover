@@ -244,7 +244,6 @@ fn a_title_slug_lands_in_the_branch_but_not_the_folder() {
     let fixture = Fixture::new();
     let mut request = request("PROJ-11", &["api"]);
     request.title = Some("Login redirect loop".to_string());
-    request.slug_from_title = true;
     let plan = fixture.plan(request);
     plan.apply(false).expect("apply");
 

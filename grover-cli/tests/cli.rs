@@ -290,17 +290,7 @@ fn new_with_a_title_puts_its_slug_in_the_branch() {
     let (root, config) = fixture();
     let created = run(
         root.path(),
-        &[
-            "new",
-            "PROJ-2",
-            "-r",
-            "api",
-            "-c",
-            &config,
-            "--title",
-            "Login redirect loop",
-            "--slug-from-title",
-        ],
+        &["new", "PROJ-2", "-r", "api", "-c", &config, "--title", "Login redirect loop"],
     );
 
     assert_eq!(created.status.code(), Some(0), "{}", err(&created));
@@ -311,13 +301,15 @@ fn new_with_a_title_puts_its_slug_in_the_branch() {
 }
 
 #[test]
-fn slug_from_title_without_a_title_is_a_usage_error() {
+fn a_title_without_usable_characters_keeps_the_plain_branch() {
     let (root, config) = fixture();
-    let refused =
-        run(root.path(), &["new", "PROJ-3", "-r", "api", "-c", &config, "--slug-from-title"]);
+    let created =
+        run(root.path(), &["new", "PROJ-3", "-r", "api", "-c", &config, "--title", "!!!"]);
 
-    assert_eq!(refused.status.code(), Some(2), "clap rejects it: {}", err(&refused));
-    assert!(!root.path().join("tickets/PROJ-3").exists(), "nothing written");
+    assert_eq!(created.status.code(), Some(0), "{}", err(&created));
+    assert!(err(&created).contains("yields no slug"), "{}", err(&created));
+    let ticket = root.path().canonicalize().expect("root").join("tickets/PROJ-3");
+    assert_eq!(git_out(&ticket.join("api"), &["branch", "--show-current"]), "ticket/PROJ-3");
 }
 
 #[test]

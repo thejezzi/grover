@@ -16,10 +16,8 @@ pub struct Request {
     pub ticket: String,
     pub repos: Vec<String>,
     pub all: bool,
-    /// Optional ticket title, used for the branch name when `slug_from_title` is set.
+    /// Optional ticket title; appended to the ticket slug in the branch name.
     pub title: Option<String>,
-    /// Build the branch name from the title instead of the ticket alone.
-    pub slug_from_title: bool,
 }
 
 /// What will be created.
@@ -372,15 +370,14 @@ fn remove_worktree(worktree: &Path, force: bool, dry_run: bool) -> Result<()> {
     }
 }
 
-/// Branch name: the template with the ticket slug, plus the title slug when asked.
+/// Branch name: the template with the ticket slug, plus the title slug when given.
 fn branch_name(config: &Config, ticket_slug: &str, request: &Request) -> String {
-    let title = match (&request.title, request.slug_from_title) {
-        (Some(title), true) => title_slug(title).or_else(|| {
+    let title = request.title.as_deref().and_then(|title| {
+        title_slug(title).or_else(|| {
             tracing::warn!("title {title:?} yields no slug; using the ticket only");
             None
-        }),
-        _ => None,
-    };
+        })
+    });
     let Some(title) = title else {
         return config.branch_template.replace("{ticket}", ticket_slug);
     };
@@ -565,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn a_title_only_changes_the_branch_when_asked() {
+    fn a_title_extends_the_branch_name() {
         let config = Config::new(PathBuf::from("/work/tickets"));
         let plain = Request { ticket: "PROJ-1".into(), ..Request::default() };
         assert_eq!(branch_name(&config, "PROJ-1", &plain), "ticket/PROJ-1");
@@ -575,14 +572,7 @@ mod tests {
             title: Some("Login redirect loop".into()),
             ..Request::default()
         };
-        assert_eq!(
-            branch_name(&config, "PROJ-1", &titled),
-            "ticket/PROJ-1",
-            "title alone does nothing"
-        );
-
-        let asked = Request { slug_from_title: true, ..titled };
-        assert_eq!(branch_name(&config, "PROJ-1", &asked), "ticket/PROJ-1-login-redirect-loop");
+        assert_eq!(branch_name(&config, "PROJ-1", &titled), "ticket/PROJ-1-login-redirect-loop");
     }
 
     #[test]
@@ -592,7 +582,6 @@ mod tests {
         let request = Request {
             ticket: "PROJ-9".into(),
             title: Some("Add dark mode".into()),
-            slug_from_title: true,
             ..Request::default()
         };
         assert_eq!(branch_name(&config, "PROJ-9", &request), "feat/PROJ-9-add-dark-mode");
@@ -601,12 +590,8 @@ mod tests {
     #[test]
     fn a_title_without_usable_words_falls_back_to_the_ticket() {
         let config = Config::new(PathBuf::from("/work/tickets"));
-        let request = Request {
-            ticket: "PROJ-2".into(),
-            title: Some("---".into()),
-            slug_from_title: true,
-            ..Request::default()
-        };
+        let request =
+            Request { ticket: "PROJ-2".into(), title: Some("---".into()), ..Request::default() };
         assert_eq!(branch_name(&config, "PROJ-2", &request), "ticket/PROJ-2");
     }
 }

@@ -180,8 +180,8 @@ grover completions <bash|zsh|fish|...>
 - `--repo` ist fuzzy, mehrfach oder kommagetrennt; `--all` nimmt alle.
 - Fehlen Ticket, `--repo` und `--all`, fragt `new` nach — aber nur mit TTY (Abschnitt 11.3).
   Ohne TTY bleibt es beim Fehler, es wird nichts angelegt.
-- `--title` beschreibt das Ticket; mit `--slug-from-title` wird daraus der sprechende
-  Branch-Name (12.8). Ohne Titel ist das Flag ein Fehler.
+- `--title` beschreibt das Ticket; sein Slug wird an den Ticket-Slug im Branch-Namen
+  gehängt (12.8). Ohne Titel bleibt der Branch wie bisher.
 - `--dry-run` zeigt Plan und Aktionen, ohne zu schreiben.
 - `list` zeigt nur vorhandene Work Items: die Namen der direkten Ticket-Unterordner von
   `work_dir`, alphabetisch sortiert und ohne Zusatzspalten. Dateien werden ignoriert;
@@ -205,8 +205,8 @@ grover completions <bash|zsh|fish|...>
 3. Fehlende Angaben erfragen, nur wenn stdin ein TTY ist: Ticket und/oder Repo-Auswahl
    (Abschnitt 11.3). Ohne TTY: Fehler wie bisher.
 4. Ticket zu Slug normalisieren (nur `[A-Za-z0-9._-]`, keine führenden `-`/`.`). Branch
-   aus `branch_template`; mit `--slug-from-title` wird der Slug aus dem Titel gebildet
-   statt aus dem Ticket (12.8). Ticket-Ordner aus `work_dir` + Ticket-Slug.
+   aus `branch_template`; mit `--title` wird der Titel-Slug angehängt (12.8). Ticket-Ordner
+   aus `work_dir` + Ticket-Slug.
 5. Auswahl per Fuzzy auflösen; Plan bauen (`worktrees`, `copies`, `create_branch`).
 6. `apply`: Ticket-Ordner anlegen, pro Repo einen Worktree auf dem ersten dort
    existierenden Ref aus `base` anlegen — mit Branch nur bei `create_branch: true`, sonst
@@ -608,14 +608,14 @@ geprüft): Esc kommt als `OperationCanceled` an, Ctrl-C als `OperationInterrupte
 Titel mitgibt, bekommt einen Namen, der etwas aussagt:
 
 ```console
-$ grover new PROJ-123 --title "Login redirect loop" --slug-from-title
+$ grover new PROJ-123 --title "Login redirect loop"
 $ git -C ~/work/tickets/PROJ-123/api branch --show-current
 ticket/PROJ-123-login-redirect-loop
 ```
 
-- `new --title <text>` nimmt den Titel eines Tickets entgegen, `--slug-from-title` schaltet
-  ihn für den Branch-Namen ein. Ohne Titel ist das Flag ein Fehler, nicht ein stiller
-  Fallback: wer es setzt, will den Titel.
+- `new --title <text>` nimmt den Titel eines Tickets entgegen; ein Slug davon wird direkt an
+  den Ticket-Slug gehängt. Ohne `--title` bleibt der Branch beim Template, ein zweites Flag
+  gibt es nicht.
 - Der Titel wird lokal in einen Slug übersetzt (`plan::title_slug`, kein Modell, keine
   Abhängigkeit): nicht-alphanumerische Zeichen werden zu `-`, alles klein, Umlaute werden
   transliteriert (`ä`→`ae`, `ö`→`oe`, `ü`→`ue`, `ß`→`ss`), Wörter wie `a`, `an`, `the`,
@@ -632,14 +632,12 @@ ticket/PROJ-123-login-redirect-loop
 - Wirksam nur mit `create_branch: true`. Bei `false` warnt `grover` („title slug ignored,
   create_branch is off“), weil ohne Branch niemand den Namen sieht.
 - `--dry-run` zeigt den fertigen Branch-Namen in der Fortschrittszeile, führt aber nichts
-  aus. Ein Prompt für den Titel gibt es nicht: er ist optional und ohne `--slug-from-title`
-  wirkungslos.
+  aus. Ein Prompt für den Titel gibt es nicht: er ist rein optional.
 - Tests: Titel → `ticket/PROJ-123-login-redirect-loop`; Füllwörter, Satzzeichen und
   Mehrfach-Leerzeichen fallen weg; mehr als fünf Wörter werden gekürzt; Umlaute werden
   transliteriert statt verworfen; ein Titel ohne Buchstaben oder Ziffern ergibt `None`;
-  `--title` ohne `--slug-from-title` ändert den Branch nicht; `--slug-from-title` ohne
-  `--title` ist ein Clap-Fehler (Exit 2); mit `create_branch: false` kommt eine Warnung und
-  der Branch bleibt beim Template.
+  ohne `--title` ändert sich der Branch nicht; mit `create_branch: false` kommt eine Warnung
+  und der Branch bleibt beim Template.
 
 ### 12.9 Kleinkram (Backlog, erst mit Bedarf)
 

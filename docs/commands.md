@@ -9,7 +9,7 @@ that page, the link is the place to go.
 
 ```text
 grover new [<ticket>] [-r|--repo <name>]... [-a|--all]
-           [-t|--title <text>] [--slug-from-title] [-n|--dry-run]
+           [-t|--title <text>] [-n|--dry-run]
 grover list
 grover path [<ticket>]
 grover status [<ticket>]
@@ -83,7 +83,7 @@ already confirmed.
 
 ```text
 grover new [<ticket>] [-r|--repo <name>]... [-a|--all]
-           [-t|--title <text>] [--slug-from-title] [-n|--dry-run]
+           [-t|--title <text>] [-n|--dry-run]
 ```
 
 `new` creates the ticket folder, a worktree for each selected repository — a second checkout
@@ -110,8 +110,7 @@ $ cd "$(grover new PROJ-123 -r api)"
 | `<ticket>` | Ticket name; asked on a terminal when omitted |
 | `-r`, `--repo <name>` | Repository name, fuzzy; repeat or separate with commas |
 | `-a`, `--all` | Every known repository; cannot be combined with `-r` |
-| `-t`, `--title <text>` | Ticket title, e.g. `"Login redirect loop"` |
-| `--slug-from-title` | Put a slug of the title into the branch name; needs `--title` |
+| `-t`, `--title <text>` | Ticket title, e.g. `"Login redirect loop"`; a slug joins the branch |
 | `-n`, `--dry-run` | Print the plan (folders, worktrees, copies) and write nothing |
 
 The repository names are matched with the fuzzy ladder described in
@@ -153,10 +152,10 @@ existing worktree is left as it is.
 ### A branch name that says what the ticket is about
 
 `branch_template` turns the ticket into a name, so `PROJ-123` becomes `ticket/PROJ-123`. Pass
-a title and ask for a slug of it, and the branch says more:
+a title and the branch says more:
 
 ```console
-$ grover new PROJ-123 -r api --title "Login redirect loop" --slug-from-title
+$ grover new PROJ-123 -r api --title "Login redirect loop"
 $ git -C ~/work/tickets/PROJ-123/api branch --show-current
 ticket/PROJ-123-login-redirect-loop
 ```
@@ -167,10 +166,10 @@ are dropped, and the result keeps at most five words and 48 characters. The temp
 is unchanged, so `feat/{ticket}` yields `feat/PROJ-123-login-redirect-loop`. The ticket
 folder stays `PROJ-123`: the title affects the branch, not the path.
 
-Two things to know: `--slug-from-title` without `--title` is a command-line error, and with
-`create_branch: false` — the default — the title is ignored with a warning, because no branch
-is created to carry the name. A title that leaves no usable characters after cleaning, such
-as `---`, produces the same warning and the plain ticket branch.
+Two things to know: without `--title` nothing changes, and with `create_branch: false` — the
+default — the title is ignored with a warning, because no branch is created to carry the
+name. A title that leaves no usable characters after cleaning, such as `!!!`, produces the
+same warning and the plain ticket branch.
 
 ### Dry run
 
@@ -189,7 +188,7 @@ $ grover new PROJ-123 -r api -r web          # the same, repeated
 $ grover new PROJ-123 --all                  # every known repository
 $ grover new "PROJ 123/foo" -r api --dry-run # slug: PROJ-123-foo
 $ grover new PROJ-123 -r api \
-    --title "Login redirect loop" --slug-from-title  # ticket/PROJ-123-login-redirect-loop
+    --title "Login redirect loop"                # ticket/PROJ-123-login-redirect-loop
 ```
 
 The ticket name is the one from your issue tracker; it does not have to be filesystem-safe.
